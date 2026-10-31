@@ -1,15 +1,15 @@
 import type { ScanResult } from './types';
 
-const API_BASE = '/api';
+const API_BASE = 'https://killchain.onrender.com/api';
 
 async function parseJsonResponse<T>(res: Response): Promise<T> {
   const contentType = res.headers.get('content-type') || '';
   if (!contentType.includes('application/json')) {
     if (res.status === 404) {
-      throw new Error('API endpoint returned 404. Check that FastAPI backend is running on port 8000.');
+      throw new Error('API endpoint returned 404. Check that the backend is awake and running at https://killchain.onrender.com.');
     }
     throw new Error(
-      `Backend returned non-JSON response (${res.status} ${res.statusText}). Make sure FastAPI backend is running on port 8000.`
+      `Backend returned non-JSON response (${res.status} ${res.statusText}). Make sure the backend at https://killchain.onrender.com is awake and reachable.`
     );
   }
   if (!res.ok) {
