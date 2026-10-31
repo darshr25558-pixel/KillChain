@@ -8,8 +8,8 @@ export function RiskScore({ data }: { data: ScanResult['risk'] }) {
   }
 
   function getBarColor(score: number) {
-    if (score >= 70) return '#e11d48';
-    if (score >= 40) return '#d97706';
+    if (score >= 70) return '#ef4444';
+    if (score >= 40) return '#f59e0b';
     return '#10b981';
   }
 
@@ -23,11 +23,11 @@ export function RiskScore({ data }: { data: ScanResult['risk'] }) {
       <div className="risk-score-display">
         <div className="score-circle">
           {data.score}
-          <span style={{ fontSize: 15, fontWeight: 500, color: '#64748b' }}> / 100</span>
+          <span className="score-label"> / 100</span>
         </div>
         <div style={{ flex: 1 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-            <span style={{ fontSize: 13, fontWeight: 600 }}>Calculated Threat Index</span>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)' }}>Threat Index</span>
             <span className={`badge ${getBadgeClass(data.level)}`}>{data.level}</span>
           </div>
           <div className="score-progress-bar">
@@ -45,7 +45,7 @@ export function RiskScore({ data }: { data: ScanResult['risk'] }) {
       <table className="data-table">
         <tbody>
           <tr>
-            <td style={{ width: 180, verticalAlign: 'top' }}><strong>Identified Factors</strong></td>
+            <td style={{ width: 180, verticalAlign: 'top' }}><strong>Risk Factors</strong></td>
             <td>
               <ul style={{ margin: 0, paddingLeft: 20 }}>
                 {data.notes.map((note, idx) => (

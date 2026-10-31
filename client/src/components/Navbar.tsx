@@ -1,25 +1,31 @@
 interface Props {
-  currentTab: 'scan' | 'history' | 'results';
-  onNavigate: (tab: 'scan' | 'history') => void;
+  currentTab: 'home' | 'scan' | 'history' | 'results';
+  onNavigate: (tab: 'home' | 'scan' | 'history') => void;
 }
 
 export function Navbar({ currentTab, onNavigate }: Props) {
   return (
     <header className="site-header">
       <div className="header-inner">
-        <div className="brand">
+        <div className="brand" onClick={() => onNavigate('home')}>
           <div className="brand-logo">
             <span className="brand-dot" />
             KILLCHAIN
           </div>
-          <span className="brand-tag">Supply Chain Integrity Analyzer</span>
+          <span className="brand-tag">Supply Chain Integrity</span>
         </div>
         <nav className="nav-links">
           <button
-            className={`nav-btn ${currentTab === 'scan' ? 'active' : ''}`}
+            className={`nav-btn ${currentTab === 'home' ? 'active' : ''}`}
+            onClick={() => onNavigate('home')}
+          >
+            Home
+          </button>
+          <button
+            className={`nav-btn ${currentTab === 'scan' || currentTab === 'results' ? 'active' : ''}`}
             onClick={() => onNavigate('scan')}
           >
-            New Scan
+            Scanner
           </button>
           <button
             className={`nav-btn ${currentTab === 'history' ? 'active' : ''}`}
@@ -27,6 +33,15 @@ export function Navbar({ currentTab, onNavigate }: Props) {
           >
             History
           </button>
+          <a
+            href="https://github.com/darshr25558-pixel/KillChain"
+            target="_blank"
+            rel="noreferrer"
+            className="nav-btn"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+          >
+            GitHub ↗
+          </a>
         </nav>
       </div>
     </header>

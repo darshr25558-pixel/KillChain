@@ -20,14 +20,14 @@ export function ResultsPage({ scanId, onBack }: { scanId: string; onBack: () => 
   useEffect(() => {
     getScanResult(scanId)
       .then(setResult)
-      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to fetch scan results'))
+      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load results'))
       .finally(() => setLoading(false));
   }, [scanId]);
 
   if (loading) {
     return (
       <div className="card empty-state">
-        <p>Loading security audit report for scan <code>{scanId}</code>...</p>
+        <p>Loading security audit report for <code>{scanId}</code>...</p>
       </div>
     );
   }
@@ -35,13 +35,9 @@ export function ResultsPage({ scanId, onBack }: { scanId: string; onBack: () => 
   if (error) {
     return (
       <div className="card">
-        <div className="error-banner">
-          <strong>Error loading report:</strong> {error}
-        </div>
-        <div style={{ marginTop: 14 }}>
-          <button className="btn-secondary" onClick={onBack}>
-            ← Back to Scanner
-          </button>
+        <div className="error-banner"><strong>Error:</strong> {error}</div>
+        <div style={{ marginTop: 16 }}>
+          <button className="btn-secondary" onClick={onBack}>← Back to Scanner</button>
         </div>
       </div>
     );
@@ -51,21 +47,17 @@ export function ResultsPage({ scanId, onBack }: { scanId: string; onBack: () => 
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}>
+      <div className="results-header">
         <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>
-              {result.pkg.name} <span style={{ color: '#64748b', fontWeight: 400 }}>v{result.pkg.version}</span>
-            </h2>
+          <h2 className="results-pkg-title">
+            {result.pkg.name} <span className="results-pkg-version">v{result.pkg.version}</span>
+          </h2>
+          <div className="results-meta">
             <span className="brand-tag">ID: {result.id}</span>
+            <span className="results-timestamp">Scanned {result.timestamp}</span>
           </div>
-          <p style={{ margin: '4px 0 0', fontSize: 13, color: '#64748b' }}>
-            Scanned on {result.timestamp}
-          </p>
         </div>
-        <button className="btn-primary" onClick={onBack}>
-          + New Scan
-        </button>
+        <button className="btn-primary" onClick={onBack}>+ New Scan</button>
       </div>
 
       <RiskScore data={result.risk} />
