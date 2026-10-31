@@ -165,6 +165,22 @@ class ComparisonTests(unittest.TestCase):
 
 
 class RepositoryTests(unittest.TestCase):
+    def test_github_api_omits_authorization_header_without_token(self):
+        response = requests.Response()
+        response.status_code = 200
+        response.headers = {}
+        response._content = b"{}"
+        response._content_consumed = True
+        url = "https://api.github.com/repos/owner/repo"
+
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("helper.scanner._open_response", return_value=response) as open_response,
+        ):
+            self.assertEqual(_fetch_github_json(url), {})
+
+        self.assertEqual(open_response.call_args.args[2], {"Accept": "application/vnd.github+json"})
+
     def test_github_api_uses_optional_server_side_token(self):
         response = requests.Response()
         response.status_code = 200
