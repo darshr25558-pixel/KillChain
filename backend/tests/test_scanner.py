@@ -4,10 +4,15 @@ import tarfile
 import tempfile
 import unittest
 import zipfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import requests
+from cryptography import x509
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.x509.oid import NameOID, ObjectIdentifier
+from sigstore.errors import VerificationError
 from helper.scanner import (
     ScanError,
     _build_analysis,
@@ -17,6 +22,7 @@ from helper.scanner import (
     _extract_zip,
     _resolve_source,
     _safe_member_parts,
+    _verify_npm_provenance,
 )
 
 
@@ -148,6 +154,172 @@ class ComparisonTests(unittest.TestCase):
         self.assertEqual(tag, "v1.2.3")
         self.assertFalse(exact)
         self.assertIsNone(error)
+
+
+class ProvenanceTests(unittest.TestCase):
+    package_name = "@actions/core"
+    version = "1.11.1"
+    artifact_sha512 = "a" * 128
+    source_commit = "d14afd7973c037fa9f72882decd1eb3befa36135"
+
+    def setUp(self):
+        private_key = Ed25519PrivateKey.generate()
+        name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "test signer")])
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        self.certificate = (
+            x509.CertificateBuilder()
+            .subject_name(name)
+            .issuer_name(name)
+            .public_key(private_key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - timedelta(minutes=1))
+            .not_valid_after(now + timedelta(minutes=1))
+            .add_extension(
+                x509.SubjectAlternativeName(
+                    [x509.UniformResourceIdentifier(
+                        "https://github.com/actions/toolkit/.github/workflows/release.yml@refs/heads/main"
+                    )]
+                ),
+                critical=False,
+            )
+            .add_extension(
+                x509.UnrecognizedExtension(
+                    ObjectIdentifier("1.3.6.1.4.1.57264.1.1"),
+                    b"https://token.actions.githubusercontent.com",
+                ),
+                critical=False,
+            )
+            .sign(private_key, algorithm=None)
+        )
+        self.statement = {
+            "_type": "https://in-toto.io/Statement/v1",
+            "predicateType": "https://slsa.dev/provenance/v1",
+            "subject": [
+                {
+                    "name": "pkg:npm/%40actions/core@1.11.1",
+                    "digest": {"sha512": self.artifact_sha512},
+                }
+            ],
+            "predicate": {
+                "buildDefinition": {
+                    "externalParameters": {
+                        "workflow": {
+                            "repository": "https://github.com/actions/toolkit",
+                            "path": ".github/workflows/release.yml",
+                        }
+                    },
+                    "resolvedDependencies": [
+                        {
+                            "uri": "git+https://github.com/actions/toolkit@refs/heads/main",
+                            "digest": {"gitCommit": self.source_commit},
+                        }
+                    ],
+                }
+            },
+        }
+
+    def _scan_provenance(self, statement=None, verify_error=None, tlog_entry=None):
+        bundle = Mock(signing_certificate=self.certificate)
+        payload = json.dumps(statement or self.statement).encode()
+        verifier = Mock()
+        if verify_error:
+            verifier.verify_dsse.side_effect = verify_error
+        else:
+            def verify_dsse(_bundle, policy):
+                policy.verify(self.certificate)
+                return "application/vnd.in-toto+json", payload
+            verifier.verify_dsse.side_effect = verify_dsse
+
+        with (
+            patch(
+                "helper.scanner._fetch_json",
+                return_value={
+                    "attestations": [
+                        {
+                            "predicateType": "https://slsa.dev/provenance/v1",
+                            "bundle": {
+                                "mediaType": "application/vnd.dev.sigstore.bundle+json",
+                                "verificationMaterial": {
+                                    "tlogEntries": [tlog_entry] if tlog_entry else []
+                                },
+                            },
+                        }
+                    ]
+                },
+            ),
+            patch("helper.scanner.Bundle.from_json", return_value=bundle),
+            patch("helper.scanner.Verifier.production", return_value=verifier),
+        ):
+            return _verify_npm_provenance(
+                {"attestations": {"url": "https://registry.npmjs.org/attestations"}},
+                self.package_name,
+                self.version,
+                self.artifact_sha512,
+                ("actions", "toolkit"),
+                self.source_commit,
+            )
+
+    def test_verified_attestation_checks_artifact_and_source_claims(self):
+        result = self._scan_provenance()
+
+        self.assertTrue(result["cryptographicVerified"])
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["status"], "verified")
+        self.assertTrue(result["artifactDigestMatch"])
+        self.assertTrue(result["packageIdentityMatch"])
+        self.assertTrue(result["sourceRepositoryMatch"])
+        self.assertTrue(result["sourceCommitMatch"])
+
+    def test_valid_signature_with_wrong_artifact_digest_is_claim_mismatch(self):
+        statement = json.loads(json.dumps(self.statement))
+        statement["subject"][0]["digest"]["sha512"] = "b" * 128
+
+        result = self._scan_provenance(statement=statement)
+
+        self.assertTrue(result["cryptographicVerified"])
+        self.assertFalse(result["verified"])
+        self.assertEqual(result["status"], "verified-claims-mismatch")
+        self.assertFalse(result["artifactDigestMatch"])
+
+    def test_missing_source_revision_claim_is_incomplete_not_verified(self):
+        statement = json.loads(json.dumps(self.statement))
+        statement["predicate"]["buildDefinition"]["resolvedDependencies"] = []
+
+        result = self._scan_provenance(statement=statement)
+
+        self.assertTrue(result["cryptographicVerified"])
+        self.assertFalse(result["verified"])
+        self.assertEqual(result["status"], "verified-claims-incomplete")
+        self.assertIsNone(result["sourceCommitMatch"])
+
+    def test_invalid_signature_is_not_reported_as_verified(self):
+        result = self._scan_provenance(verify_error=VerificationError("bad signature"))
+
+        self.assertFalse(result["cryptographicVerified"])
+        self.assertFalse(result["verified"])
+        self.assertEqual(result["status"], "invalid")
+
+    def test_unsupported_rekor_entry_is_not_mislabeled_invalid(self):
+        result = self._scan_provenance(
+            tlog_entry={
+                "integratedTime": 1,
+                "inclusionPromise": {"signedEntryTimestamp": "signature"},
+                "kindVersion": {"kind": "intoto", "version": "0.0.2"},
+            }
+        )
+
+        self.assertFalse(result["cryptographicVerified"])
+        self.assertFalse(result["verified"])
+        self.assertEqual(result["status"], "unsupported")
+
+    def test_absent_attestation_is_distinguished_from_invalid_evidence(self):
+        result = _verify_npm_provenance(
+            {}, self.package_name, self.version, self.artifact_sha512, None, None
+        )
+
+        self.assertFalse(result["signed"])
+        self.assertFalse(result["verified"])
+        self.assertEqual(result["status"], "unavailable")
 
 
 if __name__ == "__main__":

@@ -61,6 +61,17 @@ export interface ScanResult {
     verified: boolean;
     status?: string;
     note?: string;
+    cryptographicVerified?: boolean;
+    artifactDigestMatch?: boolean;
+    packageIdentityMatch?: boolean;
+    sourceRepositoryMatch?: boolean | null;
+    sourceCommitMatch?: boolean | null;
+    signerRepositoryMatch?: boolean | null;
+    signerIdentity?: string;
+    issuer?: string;
+    sourceRepository?: string | null;
+    sourceCommit?: string | null;
+    workflow?: string | null;
   };
 
   risk: { score: number; level: 'SAFE' | 'WARN' | 'CRITICAL'; notes: string[] };
