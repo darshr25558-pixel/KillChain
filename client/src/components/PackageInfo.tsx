@@ -1,36 +1,38 @@
+import { Package } from 'lucide-react';
 import type { ScanResult } from '../types';
+import { Card } from './ui/Card';
+import { DataRow } from './ui/DataRow';
+import { CodeBlock } from './ui/CodeBlock';
+import { Badge } from './ui/Badge';
 
 export function PackageInfo({ data }: { data: ScanResult['pkg'] }) {
   return (
-    <div className="card">
-      <div className="card-header">
-        <span className="card-step-badge">01</span>
-        <h3 className="card-title">npm Package Retrieval & Registry Integrity</h3>
-      </div>
-      <table className="data-table">
-        <tbody>
-          <tr>
-            <td style={{ width: 220 }}><strong>Package Identifier</strong></td>
-            <td><code>{data.name}@{data.version}</code></td>
-          </tr>
-          <tr>
-            <td><strong>Registry Tarball</strong></td>
-            <td><code>{data.tarballUrl}</code></td>
-          </tr>
-          <tr>
-            <td><strong>Integrity Shasum</strong></td>
-            <td><code>{data.shasum}</code></td>
-          </tr>
-          <tr>
-            <td><strong>Registry Verification</strong></td>
-            <td>
-              <span className={`badge ${data.verified ? 'badge-safe' : 'badge-crit'}`}>
-                {data.verified ? 'VERIFIED' : 'FAILED'}
-              </span>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+    <Card
+      step="01"
+      title="Package Retrieval & Registry Integrity"
+      icon={Package}
+      badge={
+        <Badge variant={data.verified ? 'safe' : 'crit'}>
+          {data.verified ? 'VERIFIED' : 'INTEGRITY FAILED'}
+        </Badge>
+      }
+    >
+      <DataRow label="Package Identifier">
+        <CodeBlock copyable>{`${data.name}@${data.version}`}</CodeBlock>
+      </DataRow>
+      <DataRow label="Registry Tarball">
+        <CodeBlock truncate copyable>{data.tarballUrl}</CodeBlock>
+      </DataRow>
+      <DataRow label="Integrity Shasum">
+        <CodeBlock truncate copyable>{data.shasum}</CodeBlock>
+      </DataRow>
+      <DataRow label="Registry Status">
+        <span style={{ fontSize: 13, color: data.verified ? 'var(--safe)' : 'var(--crit)' }}>
+          {data.verified
+            ? '✓ Tarball matches published registry shasum'
+            : '✗ Shasum mismatch detected against registry'}
+        </span>
+      </DataRow>
+    </Card>
   );
 }

@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react';
+import { Package, Tag, ArrowRight, Loader2, AlertOctagon, Sparkles, Shield } from 'lucide-react';
 import { startScan } from '../api';
 
 export function ScanPage({ onScanComplete }: { onScanComplete: (id: string) => void }) {
@@ -32,42 +33,70 @@ export function ScanPage({ onScanComplete }: { onScanComplete: (id: string) => v
   return (
     <div className="card">
       <div className="card-header">
-        <span className="card-step-badge">SCANNER</span>
-        <h2 className="card-title">Analyze Published Package</h2>
+        <div className="ui-card-header-left">
+          <span className="card-step-badge">SCANNER</span>
+          <div className="ui-card-title-group">
+            <h2 className="card-title">Analyze Published Package</h2>
+            <span className="ui-card-subtitle">Zero code execution — fully deterministic supply chain verification</span>
+          </div>
+        </div>
       </div>
 
       <form onSubmit={handleSubmit}>
         <div className="form-group">
-          <label className="form-label">Package Name (npm)</label>
-          <input
-            className="form-input"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="e.g. lodash, express, axios"
-            disabled={loading}
-          />
+          <label className="form-label" htmlFor="pkg-name">Package Name (npm)</label>
+          <div className="form-input-wrapper">
+            <Package size={16} className="form-input-icon" />
+            <input
+              id="pkg-name"
+              className="form-input"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. lodash, express, axios, event-stream"
+              disabled={loading}
+              autoFocus
+            />
+          </div>
         </div>
 
         <div className="form-group">
-          <label className="form-label">Version (optional, defaults to latest)</label>
-          <input
-            className="form-input"
-            value={version}
-            onChange={(e) => setVersion(e.target.value)}
-            placeholder="e.g. 4.17.21"
-            disabled={loading}
-          />
+          <label className="form-label" htmlFor="pkg-version">Version (optional, defaults to latest)</label>
+          <div className="form-input-wrapper">
+            <Tag size={16} className="form-input-icon" />
+            <input
+              id="pkg-version"
+              className="form-input"
+              value={version}
+              onChange={(e) => setVersion(e.target.value)}
+              placeholder="e.g. 4.17.21 (blank for latest)"
+              disabled={loading}
+            />
+          </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 18 }}>
+        <div className="form-group" style={{ marginTop: 24, marginBottom: 8 }}>
           <button type="submit" className="btn-primary" disabled={loading || !name.trim()}>
-            {loading ? 'Analyzing Package...' : 'Start Integrity Scan'}
+            {loading ? (
+              <>
+                <Loader2 size={16} className="badge-icon" style={{ animation: 'spin 1s linear infinite' }} />
+                <span>Analyzing Package...</span>
+              </>
+            ) : (
+              <>
+                <Shield size={16} />
+                <span>Start Integrity Scan</span>
+                <ArrowRight size={15} />
+              </>
+            )}
           </button>
         </div>
       </form>
 
       <div className="presets-container">
-        <span>Quick select:</span>
+        <span className="presets-label">
+          <Sparkles size={13} />
+          Quick picks:
+        </span>
         {samplePackages.map((pkg) => (
           <button
             key={pkg}
@@ -82,7 +111,10 @@ export function ScanPage({ onScanComplete }: { onScanComplete: (id: string) => v
 
       {error && (
         <div className="error-banner">
-          <strong>Error:</strong> {error}
+          <AlertOctagon size={18} className="badge-icon" />
+          <div>
+            <strong>Scan Failed:</strong> {error}
+          </div>
         </div>
       )}
     </div>

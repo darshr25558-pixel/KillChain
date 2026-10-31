@@ -1,42 +1,46 @@
+import { BadgeCheck, ExternalLink } from 'lucide-react';
 import type { ScanResult } from '../types';
+import { Card } from './ui/Card';
+import { DataRow } from './ui/DataRow';
+import { Badge } from './ui/Badge';
 
 export function ProvenanceCheck({ data }: { data: ScanResult['provenance'] }) {
   return (
-    <div className="card">
-      <div className="card-header">
-        <span className="card-step-badge">08</span>
-        <h3 className="card-title">Provenance & Build Attestation Verification</h3>
-      </div>
-      <table className="data-table">
-        <tbody>
-          <tr>
-            <td style={{ width: 220 }}><strong>Cryptographic Signature</strong></td>
-            <td>
-              <span className={`badge ${data.signed ? 'badge-safe' : 'badge-warn'}`}>
-                {data.signed ? 'SIGNED (Sigstore / npm)' : 'UNSIGNED'}
-              </span>
-            </td>
-          </tr>
-          <tr>
-            <td><strong>Source-to-Build Verification</strong></td>
-            <td>
-              <span className={`badge ${data.verified ? 'badge-safe' : 'badge-crit'}`}>
-                {data.verified ? 'ATTESTATION VERIFIED' : 'UNVERIFIED / CLAIMS MISMATCH'}
-              </span>
-            </td>
-          </tr>
-          {data.attestationUrl && (
-            <tr>
-              <td><strong>Attestation Ledger</strong></td>
-              <td>
-                <a href={data.attestationUrl} target="_blank" rel="noreferrer" style={{ color: '#2563eb' }}>
-                  {data.attestationUrl}
-                </a>
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
-    </div>
+    <Card
+      step="08"
+      title="Provenance & Build Attestation"
+      icon={BadgeCheck}
+      badge={
+        <Badge variant={data.verified ? 'safe' : data.signed ? 'warn' : 'crit'}>
+          {data.verified ? 'ATTESTATION VERIFIED' : data.signed ? 'SIGNED ONLY' : 'UNSIGNED'}
+        </Badge>
+      }
+    >
+      <DataRow label="Cryptographic Signature">
+        <Badge variant={data.signed ? 'safe' : 'warn'}>
+          {data.signed ? 'SIGNED (Sigstore / npm)' : 'UNSIGNED'}
+        </Badge>
+      </DataRow>
+      <DataRow label="Source-to-Build Verification">
+        <span style={{ fontSize: 13, color: data.verified ? 'var(--safe)' : 'var(--crit)' }}>
+          {data.verified
+            ? '✓ Provenance verified: build generated directly from GitHub Actions runner'
+            : '✗ No verified build attestation or claims mismatch'}
+        </span>
+      </DataRow>
+      {data.attestationUrl && (
+        <DataRow label="Attestation Ledger">
+          <a
+            href={data.attestationUrl}
+            target="_blank"
+            rel="noreferrer"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+          >
+            <span>{data.attestationUrl}</span>
+            <ExternalLink size={13} />
+          </a>
+        </DataRow>
+      )}
+    </Card>
   );
 }

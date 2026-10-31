@@ -1,10 +1,30 @@
+import {
+  ShieldCheck,
+  ArrowRight,
+  ExternalLink,
+  Package,
+  Lock,
+  GitBranch,
+  FileText,
+  GitCompare,
+  Hammer,
+  ShieldAlert,
+  BadgeCheck,
+  Activity,
+  Sparkles,
+  CheckCircle2,
+  ShieldOff,
+  Hash,
+  Cpu,
+} from 'lucide-react';
+
 export function HomePage({ onStartScan }: { onStartScan: () => void }) {
   return (
     <div>
       <section className="hero-section">
         <div className="hero-badge">
-          <span className="brand-dot" />
-          Open-Source Supply Chain Security
+          <ShieldCheck size={14} />
+          <span>Open-Source Supply Chain Security</span>
         </div>
 
         <h1 className="hero-title">
@@ -20,7 +40,8 @@ export function HomePage({ onStartScan }: { onStartScan: () => void }) {
 
         <div className="hero-actions">
           <button className="btn-primary hero-cta" onClick={onStartScan}>
-            Start Scanning →
+            <span>Start Scanning</span>
+            <ArrowRight size={16} />
           </button>
           <a
             href="https://github.com/darshr25558-pixel/KillChain"
@@ -28,15 +49,19 @@ export function HomePage({ onStartScan }: { onStartScan: () => void }) {
             rel="noreferrer"
             className="hero-cta-secondary"
           >
-            View on GitHub
+            <span>View on GitHub</span>
+            <ExternalLink size={15} />
           </a>
         </div>
 
         <div className="hero-visual">
           <div className="terminal-bar">
-            <span className="terminal-dot terminal-dot-red" />
-            <span className="terminal-dot terminal-dot-yellow" />
-            <span className="terminal-dot terminal-dot-green" />
+            <div className="terminal-dots">
+              <span className="terminal-dot terminal-dot-red" />
+              <span className="terminal-dot terminal-dot-yellow" />
+              <span className="terminal-dot terminal-dot-green" />
+            </div>
+            <div className="terminal-title">killchain-cli — bash</div>
           </div>
           <div className="terminal-output">
             <div><span className="cmd">$</span> killchain scan event-stream@3.3.6</div>
@@ -59,18 +84,22 @@ export function HomePage({ onStartScan }: { onStartScan: () => void }) {
 
         <div className="stats-row">
           <div className="stat-item">
+            <div className="stat-icon"><CheckCircle2 size={20} /></div>
             <div className="stat-number">10</div>
             <div className="stat-label">Security Checks</div>
           </div>
           <div className="stat-item">
+            <div className="stat-icon"><ShieldOff size={20} /></div>
             <div className="stat-number">0</div>
             <div className="stat-label">Code Executed</div>
           </div>
           <div className="stat-item">
+            <div className="stat-icon"><Hash size={20} /></div>
             <div className="stat-number">SHA-256</div>
             <div className="stat-label">Hash Verification</div>
           </div>
           <div className="stat-item">
+            <div className="stat-icon"><Cpu size={20} /></div>
             <div className="stat-number">100%</div>
             <div className="stat-label">Deterministic</div>
           </div>
@@ -89,52 +118,72 @@ export function HomePage({ onStartScan }: { onStartScan: () => void }) {
 
         <div className="features-grid">
           <div className="feature-card">
-            <div className="feature-icon feature-icon-blue">📦</div>
+            <div className="feature-icon-box icon-accent">
+              <Package size={20} />
+            </div>
             <h3>1. Package Retrieval</h3>
             <p>Downloads the exact published tarball from the npm registry and verifies its shasum integrity hash against the registry metadata.</p>
           </div>
           <div className="feature-card">
-            <div className="feature-icon feature-icon-green">🔒</div>
+            <div className="feature-icon-box icon-safe">
+              <Lock size={20} />
+            </div>
             <h3>2. Safe Extraction</h3>
             <p>Extracts the archive in a sandboxed environment with zero code execution — no install scripts, no postinstall hooks run.</p>
           </div>
           <div className="feature-card">
-            <div className="feature-icon feature-icon-blue">🔗</div>
+            <div className="feature-icon-box icon-accent">
+              <GitBranch size={20} />
+            </div>
             <h3>3. Source Retrieval</h3>
             <p>Identifies the linked GitHub repository and resolves the exact commit SHA corresponding to the published version tag.</p>
           </div>
           <div className="feature-card">
-            <div className="feature-icon feature-icon-amber">📋</div>
+            <div className="feature-icon-box icon-info">
+              <FileText size={20} />
+            </div>
             <h3>4. File Manifest</h3>
             <p>Generates a complete inventory of every file with path, byte size, and a SHA-256 cryptographic hash for audit trails.</p>
           </div>
           <div className="feature-card">
-            <div className="feature-icon feature-icon-red">⚖️</div>
+            <div className="feature-icon-box icon-warn">
+              <GitCompare size={20} />
+            </div>
             <h3>5. Source Comparison</h3>
             <p>Performs a file-by-file diff between the source repository and the published package, flagging every addition, removal, and modification.</p>
           </div>
           <div className="feature-card">
-            <div className="feature-icon feature-icon-amber">🏗️</div>
+            <div className="feature-icon-box icon-warn">
+              <Hammer size={20} />
+            </div>
             <h3>6. Build Classification</h3>
             <p>Categorizes each file difference as expected build output (minified bundles, compiled assets) or unexpected and suspicious.</p>
           </div>
           <div className="feature-card">
-            <div className="feature-icon feature-icon-red">🛡️</div>
+            <div className="feature-icon-box icon-crit">
+              <ShieldAlert size={20} />
+            </div>
             <h3>7. Security Analysis</h3>
             <p>Scans for obfuscated code, eval patterns, network calls, filesystem access, and other suspicious behaviors with severity ratings.</p>
           </div>
           <div className="feature-card">
-            <div className="feature-icon feature-icon-green">✍️</div>
+            <div className="feature-icon-box icon-safe">
+              <BadgeCheck size={20} />
+            </div>
             <h3>8. Provenance Verification</h3>
             <p>Checks for Sigstore signatures, npm provenance attestations, and verifies source-to-build claims against the transparency log.</p>
           </div>
           <div className="feature-card">
-            <div className="feature-icon feature-icon-blue">📊</div>
+            <div className="feature-icon-box icon-accent">
+              <Activity size={20} />
+            </div>
             <h3>9. Risk Scoring</h3>
             <p>Computes a transparent 0–100 threat index based on weighted evidence from all previous checks, with per-factor breakdown.</p>
           </div>
           <div className="feature-card">
-            <div className="feature-icon feature-icon-indigo">🤖</div>
+            <div className="feature-icon-box icon-info">
+              <Sparkles size={20} />
+            </div>
             <h3>10. AI Explanations</h3>
             <p>Uses AI models to translate deterministic scanner findings into plain-language security reports with actionable recommendations.</p>
           </div>
@@ -152,17 +201,17 @@ export function HomePage({ onStartScan }: { onStartScan: () => void }) {
 
         <div className="steps-list">
           <div className="step-item">
-            <span className="step-number">01</span>
+            <div className="step-number-circle">01</div>
             <h4>Enter a Package</h4>
             <p>Type any npm package name and version. KILLCHAIN fetches both the published tarball and the linked source repository automatically.</p>
           </div>
           <div className="step-item">
-            <span className="step-number">02</span>
+            <div className="step-number-circle">02</div>
             <h4>Automated Analysis</h4>
             <p>The 10-stage pipeline runs deterministic checks: file comparison, hash verification, security scanning, provenance validation, and risk scoring.</p>
           </div>
           <div className="step-item">
-            <span className="step-number">03</span>
+            <div className="step-number-circle">03</div>
             <h4>Evidence-Based Report</h4>
             <p>Review a structured report with every finding backed by file paths, hashes, and diffs. AI provides explanations grounded in the actual evidence.</p>
           </div>
@@ -188,10 +237,11 @@ export function HomePage({ onStartScan }: { onStartScan: () => void }) {
       <section className="cta-section">
         <h2>Ready to Verify Your Dependencies?</h2>
         <p>
-          Start scanning packages now. No account required. No data stored beyond your session.
+          Start scanning packages now. No account required. Deterministic and fast.
         </p>
         <button className="btn-primary hero-cta" onClick={onStartScan}>
-          Launch Scanner →
+          <span>Launch Scanner</span>
+          <ArrowRight size={16} />
         </button>
       </section>
 
@@ -201,4 +251,3 @@ export function HomePage({ onStartScan }: { onStartScan: () => void }) {
     </div>
   );
 }
-

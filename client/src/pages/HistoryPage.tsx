@@ -1,5 +1,10 @@
 import { useEffect, useState } from 'react';
+import { History, Plus, ArrowRight, Clock, ShieldAlert } from 'lucide-react';
 import { getPastScans } from '../api';
+import { Badge, type BadgeVariant } from '../components/ui/Badge';
+import { CodeBlock } from '../components/ui/CodeBlock';
+import { EmptyState } from '../components/ui/EmptyState';
+import { Skeleton } from '../components/ui/Skeleton';
 
 interface Props {
   onSelectScan: (id: string) => void;
@@ -18,70 +23,99 @@ export function HistoryPage({ onSelectScan, onNewScan }: Props) {
       .finally(() => setLoading(false));
   }, []);
 
-  function getBadgeClass(score: number) {
-    if (score >= 70) return 'badge-crit';
-    if (score >= 40) return 'badge-warn';
-    return 'badge-safe';
+  function getBadgeVariant(score: number): BadgeVariant {
+    if (score >= 70) return 'crit';
+    if (score >= 40) return 'warn';
+    return 'safe';
   }
 
   return (
     <div className="card">
-      <div className="card-header" style={{ justifyContent: 'space-between' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+      <div className="card-header">
+        <div className="ui-card-header-left">
           <span className="card-step-badge">HISTORY</span>
-          <h2 className="card-title">Past Security Scans</h2>
+          <div className="ui-card-header-icon">
+            <History size={16} />
+          </div>
+          <div className="ui-card-title-group">
+            <h2 className="card-title">Audit Trail & Past Scans</h2>
+            <span className="ui-card-subtitle">Previously executed package verification sessions</span>
+          </div>
         </div>
         <button className="btn-secondary" onClick={onNewScan}>
-          + Run New Scan
+          <Plus size={14} />
+          <span>New Scan</span>
         </button>
       </div>
 
-      {loading && <p className="empty-state">Loading scan history...</p>}
+      {loading && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '16px 0' }}>
+          <Skeleton height={44} />
+          <Skeleton height={44} />
+          <Skeleton height={44} />
+        </div>
+      )}
 
       {error && (
         <div className="error-banner">
-          <strong>Notice:</strong> {error}
+          <ShieldAlert size={16} />
+          <span>{error}</span>
         </div>
       )}
 
       {!loading && scans.length === 0 && !error && (
-        <div className="empty-state">
-          <p>No previous scans found in this session.</p>
-          <button className="btn-primary" onClick={onNewScan} style={{ marginTop: 8 }}>
-            Analyze Your First Package
-          </button>
-        </div>
+        <EmptyState
+          icon={Clock}
+          title="No Prior Scans Found"
+          description="You haven't run any package analyses in this session yet. Launch a scan to verify your first dependency."
+          action={
+            <button className="btn-primary" onClick={onNewScan}>
+              <span>Scan First Package</span>
+              <ArrowRight size={14} />
+            </button>
+          }
+        />
       )}
 
       {scans.length > 0 && (
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Scan ID</th>
-              <th>Target Package</th>
-              <th>Threat Score</th>
-              <th style={{ width: 100 }}>Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {scans.map((s) => (
-              <tr key={s.id}>
-                <td><code>{s.id}</code></td>
-                <td><strong>{s.name}</strong>@{s.version}</td>
-                <td>
-                  <span className={`badge ${getBadgeClass(s.score)}`}>
-                    {s.score} / 100
-                  </span>
-                </td>
-                <td>
-                  <button className="btn-secondary" onClick={() => onSelectScan(s.id)}>
-                    View Report
-                  </button>
-                </td>
+        <div className="table-responsive-wrapper">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th style={{ width: 140 }}>Scan ID</th>
+                <th>Target Package</th>
+                <th style={{ width: 160 }}>Threat Index</th>
+                <th style={{ width: 130, textAlign: 'right' }}>Action</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {scans.map((s) => (
+                <tr key={s.id}>
+                  <td>
+                    <CodeBlock copyable={false}>{s.id}</CodeBlock>
+                  </td>
+                  <td>
+                    <strong style={{ color: 'var(--text-primary)', fontSize: 14 }}>{s.name}</strong>
+                    <span style={{ color: 'var(--accent)', fontFamily: 'var(--font-mono)', fontSize: 13, marginLeft: 4 }}>
+                      @{s.version}
+                    </span>
+                  </td>
+                  <td>
+                    <Badge variant={getBadgeVariant(s.score)}>
+                      {s.score} / 100
+                    </Badge>
+                  </td>
+                  <td style={{ textAlign: 'right' }}>
+                    <button className="btn-secondary" onClick={() => onSelectScan(s.id)}>
+                      <span>View Report</span>
+                      <ArrowRight size={13} />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
