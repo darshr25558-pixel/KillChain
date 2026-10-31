@@ -13,7 +13,7 @@ KillChain is a security tool that analyzes whether a published package (e.g. fro
 | Backend  | Python, FastAPI, Uvicorn            |
 | Frontend | React 19, TypeScript, Vite          |
 | Linting  | oxlint (client)                     |
-| Deploy   | Render (backend, via deploy hooks)  |
+| Deploy   | Render (backend), Vercel (frontend) |
 | CI/CD    | GitHub Actions                      |
 
 ## Project Structure
@@ -22,6 +22,7 @@ KillChain is a security tool that analyzes whether a published package (e.g. fro
 KillChain/
 ├── backend/          # FastAPI backend
 │   ├── main.py       # API entry point
+│   ├── venv/         # Python virtual environment (created by install.sh)
 │   └── requirements.txt
 ├── client/           # React + Vite frontend
 │   └── src/
@@ -45,7 +46,7 @@ KillChain/
 ./install.sh
 ```
 
-This runs `npm install` in `client/` and `pip install -r requirements.txt` in `backend/`.
+This installs client packages (`npm install` in `client/`), creates a Python virtual environment in `backend/venv`, and installs the backend requirements into it.
 
 ### Run locally
 
@@ -55,7 +56,7 @@ This runs `npm install` in `client/` and `pip install -r requirements.txt` in `b
 
 This starts:
 
-- **Backend** — Uvicorn serving the FastAPI app on `http://localhost:8080`
+- **Backend** — Uvicorn serving the FastAPI app with auto-reload on `http://localhost:8000`
 - **Frontend** — Vite dev server (`npm run dev`)
 
 Press `Ctrl+C` to stop both processes cleanly.
@@ -69,7 +70,7 @@ The backend currently exposes a minimal API (in active development):
 
 ## CI/CD
 
-GitHub Actions workflows handle testing and deployment. The backend deploys to [Render](https://render.com) via deploy hooks, configured in `render.yaml` (Python 3.11.9, free tier, auto-deploy disabled in favor of Actions-controlled deploys).
+GitHub Actions workflows handle testing and deployment. The backend deploys to [Render](https://render.com) via deploy hooks, configured in `render.yaml` (Python 3.11.9, free tier, auto-deploy disabled in favor of Actions-controlled deploys). The frontend deploys to [Vercel](https://vercel.com).
 
 ## Team
 
