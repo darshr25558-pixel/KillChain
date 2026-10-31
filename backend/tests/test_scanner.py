@@ -1,5 +1,6 @@
 import io
 import json
+import shutil
 import tarfile
 import tempfile
 import unittest
@@ -20,10 +21,15 @@ from helper.scanner import (
     _compare_manifests,
     _extract_tar,
     _extract_zip,
+    _normalize_public_github_url,
+    _resolve_repository_revision,
     _resolve_source,
     _safe_member_parts,
+    inspect_public_repository,
+    run_scan,
     _verify_npm_provenance,
 )
+from models.models import RepositoryScan
 
 
 class ArchiveTests(unittest.TestCase):
@@ -154,6 +160,191 @@ class ComparisonTests(unittest.TestCase):
         self.assertEqual(tag, "v1.2.3")
         self.assertFalse(exact)
         self.assertIsNone(error)
+
+
+class RepositoryTests(unittest.TestCase):
+    def test_normalizes_public_github_repository_urls(self):
+        normalized, repository = _normalize_public_github_url(
+            "https://github.com/Owner/Repo.git/"
+        )
+
+        self.assertEqual(normalized, "https://github.com/Owner/Repo")
+        self.assertEqual(repository, ("Owner", "Repo"))
+
+    def test_rejects_non_repository_github_urls(self):
+        for url in (
+            "http://github.com/owner/repo",
+            "https://user:password@github.com/owner/repo",
+            "https://github.com/owner/repo/tree/main",
+            "https://github.com/owner/repo?tab=readme",
+            "https://example.com/owner/repo",
+        ):
+            with self.subTest(url=url), self.assertRaises(ScanError):
+                _normalize_public_github_url(url)
+
+    def test_repository_inspection_lists_root_and_nested_package_manifests(self):
+        commit = "a" * 40
+
+        def github_json(url):
+            if url.endswith("/repos/owner/repo"):
+                return {
+                    "html_url": "https://github.com/owner/repo",
+                    "full_name": "owner/repo",
+                    "description": "test repo",
+                    "default_branch": "main",
+                    "private": False,
+                    "updated_at": "2026-01-01T00:00:00Z",
+                }
+            if url.endswith("/branches?per_page=100"):
+                return [{"name": "main", "commit": {"sha": commit}}]
+            if url.endswith("/tags?per_page=100"):
+                return [{"name": "v1.0.0", "commit": {"sha": commit}}]
+            if url.endswith("/releases?per_page=100"):
+                return [{"name": "Release 1", "tag_name": "v1.0.0"}]
+            if url.endswith("/branches/main"):
+                return {"commit": {"sha": commit}}
+            if url.endswith(f"/git/trees/{commit}?recursive=1"):
+                return {
+                    "truncated": False,
+                    "tree": [
+                        {"path": "package.json", "type": "blob"},
+                        {"path": "packages/one/package.json", "type": "blob"},
+                        {"path": "README.md", "type": "blob"},
+                    ],
+                }
+            self.fail(f"Unexpected GitHub API URL: {url}")
+
+        def raw_file(url):
+            if url.endswith("/packages/one/package.json"):
+                return json.dumps(
+                    {
+                        "name": "@owner/one",
+                        "version": "2.0.0",
+                        "workspaces": ["packages/*"],
+                        "scripts": {"build": "tsc"},
+                        "dependencies": {"typescript": "^5"},
+                    }
+                )
+            if url.endswith("/package.json"):
+                return json.dumps({"name": "root-package", "version": "1.0.0"})
+            self.fail(f"Unexpected raw GitHub URL: {url}")
+
+        with (
+            patch("helper.scanner._fetch_github_json", side_effect=github_json),
+            patch("helper.scanner._read_github_raw_file", side_effect=raw_file),
+        ):
+            result = inspect_public_repository("https://github.com/owner/repo/")
+
+        self.assertEqual(result["repository"]["defaultBranchCommit"], commit)
+        self.assertEqual([item["path"] for item in result["manifests"]], [
+            "package.json",
+            "packages/one/package.json",
+        ])
+        self.assertEqual(result["manifests"][1]["name"], "@owner/one")
+        self.assertEqual(result["manifests"][1]["directory"], "packages/one")
+        self.assertEqual(result["manifests"][1]["scripts"]["build"], "tsc")
+        self.assertEqual(result["releases"][0]["tag"], "v1.0.0")
+
+    def test_repository_revision_resolves_selected_ref_without_claiming_unmatched_git_head(self):
+        commit = "b" * 40
+        with patch(
+            "helper.scanner._fetch_github_json", return_value={"sha": commit}
+        ):
+            resolved, reference, exact, association = _resolve_repository_revision(
+                ("owner", "repo"), "release/1.2", "a" * 40
+            )
+
+        self.assertEqual(resolved, commit)
+        self.assertEqual(reference, "release/1.2")
+        self.assertFalse(exact)
+        self.assertEqual(association, "selected")
+
+    def test_repository_scan_requires_an_exact_npm_version(self):
+        with self.assertRaises(ValueError):
+            RepositoryScan(
+                repository_url="https://github.com/owner/repo",
+                manifest_path="package.json",
+                name="package",
+                version="latest",
+            )
+
+    def test_repository_scan_compares_selected_nested_manifest_with_exact_npm_release(self):
+        commit = "c" * 40
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            published_archive = root / "published.tgz"
+            with tarfile.open(published_archive, "w:gz") as archive:
+                for path, content in (
+                    ("package/package.json", '{"name":"@owner/example","version":"1.0.0"}'),
+                    ("package/index.js", "module.exports = true;\n"),
+                ):
+                    body = content.encode()
+                    member = tarfile.TarInfo(path)
+                    member.size = len(body)
+                    archive.addfile(member, io.BytesIO(body))
+
+            source_archive = root / "source.zip"
+            with zipfile.ZipFile(source_archive, "w") as archive:
+                archive.writestr(
+                    "repo-root/packages/example/package.json",
+                    '{"name":"@owner/example","version":"1.0.0"}',
+                )
+                archive.writestr(
+                    "repo-root/packages/example/index.js",
+                    "module.exports = true;\n",
+                )
+
+            version_metadata = {
+                "repository": "https://github.com/owner/repo",
+                "gitHead": commit,
+                "dist": {
+                    "tarball": "https://registry.npmjs.org/example/-/example-1.0.0.tgz"
+                },
+            }
+            registry_metadata = {
+                "name": "@owner/example",
+                "repository": "https://github.com/owner/repo",
+                "versions": {"1.0.0": version_metadata},
+                "dist-tags": {"latest": "1.0.0"},
+            }
+
+            def download_published(_url, destination, *_args):
+                shutil.copyfile(published_archive, destination)
+                return {
+                    "size": published_archive.stat().st_size,
+                    "sha256": "a" * 64,
+                    "sha512": "b" * 128,
+                    "sha1": "c" * 40,
+                    "verified": True,
+                    "algorithm": "sha512",
+                    "integrity": "sha512-test",
+                }
+
+            def download_source(_owner, _repo, _commit, destination):
+                shutil.copyfile(source_archive, destination)
+
+            with (
+                patch("helper.scanner._registry_metadata", return_value=registry_metadata),
+                patch("helper.scanner._download_archive", side_effect=download_published),
+                patch(
+                    "helper.scanner._resolve_source",
+                    return_value=(commit, f"gitHead:{commit}", True, None),
+                ),
+                patch("helper.scanner._download_source_archive", side_effect=download_source),
+            ):
+                result = run_scan(
+                    "@owner/example",
+                    "1.0.0",
+                    repository_url="https://github.com/owner/repo",
+                    manifest_path="packages/example/package.json",
+                )
+
+        self.assertEqual(result["pkg"]["version"], "1.0.0")
+        self.assertEqual(result["source"]["commit"], commit)
+        self.assertTrue(result["source"]["match"])
+        self.assertEqual(result["source"]["manifestPath"], "packages/example/package.json")
+        self.assertIn('"name":"@owner/example"', result["source"]["packageManifest"])
+        self.assertEqual(result["comparison"]["summary"]["identical"], 2)
 
 
 class ProvenanceTests(unittest.TestCase):

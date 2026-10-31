@@ -30,12 +30,16 @@ from helper.functions import _version_sort_key
 REGISTRY_HOST = "registry.npmjs.org"
 GITHUB_API_HOST = "api.github.com"
 GITHUB_ARCHIVE_HOST = "codeload.github.com"
+GITHUB_RAW_HOST = "raw.githubusercontent.com"
 MAX_ARCHIVE_BYTES = 100 * 1024 * 1024
 MAX_EXTRACTED_BYTES = 300 * 1024 * 1024
 MAX_FILE_BYTES = 25 * 1024 * 1024
 MAX_FILES = 20_000
 MAX_METADATA_BYTES = 20 * 1024 * 1024
 MAX_ATTESTATION_BYTES = 10 * 1024 * 1024
+MAX_REPOSITORY_MANIFESTS = 100
+MAX_PACKAGE_JSON_BYTES = 1024 * 1024
+MAX_REPOSITORY_MANIFEST_BYTES = 10 * 1024 * 1024
 MAX_TEXT_DIFF_BYTES = 64 * 1024
 MAX_DIFF_LINES = 120
 SLSA_PROVENANCE_V1 = "https://slsa.dev/provenance/v1"
@@ -144,6 +148,258 @@ def _registry_metadata(package_name: str) -> Dict[str, Any]:
     package_path = quote(package_name, safe="")
     url = f"https://{REGISTRY_HOST}/{package_path}"
     return _fetch_json(url, (REGISTRY_HOST,))
+
+
+def _fetch_github_json(url: str) -> Any:
+    response = _open_response(url, (GITHUB_API_HOST,), {"Accept": "application/vnd.github+json"})
+    if response.status_code != 200:
+        status = response.status_code
+        response.close()
+        message = (
+            "The public GitHub repository was not found or is inaccessible."
+            if status == 404
+            else f"GitHub repository request failed with HTTP {status}."
+        )
+        raise ScanError(message, status_code=404 if status == 404 else 502)
+    body = _read_limited_response(response, MAX_METADATA_BYTES)
+    try:
+        return json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+        raise ScanError("GitHub returned invalid repository metadata.") from exc
+
+
+def _read_github_raw_file(url: str) -> str:
+    response = _open_response(url, (GITHUB_RAW_HOST,))
+    if response.status_code != 200:
+        status = response.status_code
+        response.close()
+        raise ScanError(f"Unable to read a package.json from the selected repository (HTTP {status}).")
+    body = _read_limited_response(response, MAX_PACKAGE_JSON_BYTES)
+    try:
+        return body.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ScanError("A repository package.json was not valid UTF-8.") from exc
+
+
+def _normalize_public_github_url(value: str) -> Tuple[str, Tuple[str, str]]:
+    try:
+        parsed = urlsplit(value.strip())
+        valid_port = parsed.port in (None, 443)
+    except ValueError as exc:
+        raise ScanError("Enter a valid public GitHub repository URL.", status_code=422) from exc
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "github.com"
+        or parsed.username
+        or parsed.password
+        or not valid_port
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ScanError("Enter a public GitHub URL in the form https://github.com/owner/repository.", status_code=422)
+    segments = [unquote(segment) for segment in parsed.path.strip("/").split("/") if segment]
+    if len(segments) != 2:
+        raise ScanError("Enter a GitHub repository URL containing only an owner and repository.", status_code=422)
+    if segments[1].endswith(".git"):
+        segments[1] = segments[1][:-4]
+    if len(segments) != 2 or not all(
+        re.fullmatch(r"[A-Za-z0-9_.-]+", segment) and segment not in (".", "..")
+        for segment in segments
+    ):
+        raise ScanError("Enter a valid GitHub owner and repository name.", status_code=422)
+    owner, repository_name = segments
+    return f"https://github.com/{owner}/{repository_name}", (owner, repository_name)
+
+
+def inspect_public_repository(repository_url: str) -> Dict[str, Any]:
+    normalized_url, repository = _normalize_public_github_url(repository_url)
+    owner, repository_name = repository
+    api_root = f"https://{GITHUB_API_HOST}/repos/{quote(owner, safe='')}/{quote(repository_name, safe='')}"
+    repository_metadata = _fetch_github_json(api_root)
+    if not isinstance(repository_metadata, dict):
+        raise ScanError("GitHub returned an unexpected repository metadata format.")
+    default_branch = repository_metadata.get("default_branch")
+    if not isinstance(default_branch, str) or not default_branch:
+        raise ScanError("GitHub did not report a default branch for this repository.")
+
+    branches = _fetch_github_json(f"{api_root}/branches?per_page=100")
+    tags = _fetch_github_json(f"{api_root}/tags?per_page=100")
+    releases = _fetch_github_json(f"{api_root}/releases?per_page=100")
+    if (
+        not isinstance(branches, list)
+        or not isinstance(tags, list)
+        or not isinstance(releases, list)
+    ):
+        raise ScanError("GitHub returned an unexpected branch, tag, or release list.")
+    default_branch_metadata = _fetch_github_json(
+        f"{api_root}/branches/{quote(default_branch, safe='')}"
+    )
+    default_commit = (
+        default_branch_metadata.get("commit", {}).get("sha")
+        if isinstance(default_branch_metadata, dict)
+        and isinstance(default_branch_metadata.get("commit"), dict)
+        else None
+    )
+    if not isinstance(default_commit, str) or not re.fullmatch(r"[a-fA-F0-9]{40,64}", default_commit):
+        raise ScanError("GitHub did not return a valid commit for the default branch.")
+
+    tree = _fetch_github_json(
+        f"{api_root}/git/trees/{quote(default_commit, safe='')}?recursive=1"
+    )
+    if not isinstance(tree, dict) or not isinstance(tree.get("tree"), list):
+        raise ScanError("GitHub returned an unexpected repository file listing.")
+    if tree.get("truncated"):
+        raise ScanError(
+            "This repository's file listing is too large to inspect completely. "
+            "Choose a smaller repository or a future package-path-specific scan."
+        )
+    manifest_entries = [
+        item
+        for item in tree["tree"]
+        if isinstance(item, dict)
+        and item.get("type") == "blob"
+        and isinstance(item.get("path"), str)
+        and PurePosixPath(item["path"]).name == "package.json"
+    ]
+    manifest_paths = sorted(item["path"] for item in manifest_entries)
+    if len(manifest_paths) > MAX_REPOSITORY_MANIFESTS:
+        raise ScanError(
+            f"Found more than {MAX_REPOSITORY_MANIFESTS} package.json files; "
+            "refusing to make an incomplete package selection."
+        )
+    if sum(
+        item.get("size", 0)
+        for item in manifest_entries
+        if isinstance(item.get("size"), int) and item["size"] > 0
+    ) > MAX_REPOSITORY_MANIFEST_BYTES:
+        raise ScanError(
+            "The discovered package manifests exceed the combined inspection size limit."
+        )
+
+    manifests = []
+    total_manifest_bytes = 0
+    for path in manifest_paths:
+        encoded_path = "/".join(quote(part, safe="") for part in PurePosixPath(path).parts)
+        raw_manifest = _read_github_raw_file(
+            f"https://{GITHUB_RAW_HOST}/{quote(owner, safe='')}/"
+            f"{quote(repository_name, safe='')}/{quote(default_commit, safe='')}/{encoded_path}"
+        )
+        total_manifest_bytes += len(raw_manifest.encode("utf-8"))
+        if total_manifest_bytes > MAX_REPOSITORY_MANIFEST_BYTES:
+            raise ScanError(
+                "The discovered package manifests exceed the combined inspection size limit."
+            )
+        try:
+            manifest = json.loads(raw_manifest)
+        except (json.JSONDecodeError, RecursionError):
+            manifest = None
+        if not isinstance(manifest, dict):
+            manifests.append(
+                {
+                    "path": path,
+                    "directory": PurePosixPath(path).parent.as_posix()
+                    if PurePosixPath(path).parent.as_posix() != "."
+                    else "",
+                    "valid": False,
+                    "error": "The package.json is malformed or is not a JSON object.",
+                    "content": raw_manifest,
+                }
+            )
+            continue
+        manifest_name = manifest.get("name")
+        manifest_version = manifest.get("version")
+        valid_identity = (
+            isinstance(manifest_name, str)
+            and re.fullmatch(
+                r"(?:@[a-z0-9._~-]+/)?[a-z0-9][a-z0-9._~-]*",
+                manifest_name.strip(),
+            )
+            is not None
+            and isinstance(manifest_version, str)
+            and 0 < len(manifest_version.strip()) <= 128
+        )
+        scripts = manifest.get("scripts")
+        dependencies = manifest.get("dependencies")
+        dev_dependencies = manifest.get("devDependencies")
+        manifests.append(
+            {
+                "path": path,
+                "directory": PurePosixPath(path).parent.as_posix()
+                if PurePosixPath(path).parent.as_posix() != "."
+                else "",
+                "valid": valid_identity,
+                "name": manifest_name.strip() if isinstance(manifest_name, str) else None,
+                "version": manifest_version.strip() if isinstance(manifest_version, str) else None,
+                "repository": manifest.get("repository"),
+                "main": manifest.get("main"),
+                "module": manifest.get("module"),
+                "types": manifest.get("types", manifest.get("typings")),
+                "exports": manifest.get("exports"),
+                "files": manifest.get("files"),
+                "scripts": scripts if isinstance(scripts, dict) else {},
+                "dependencies": dependencies if isinstance(dependencies, dict) else {},
+                "devDependencies": dev_dependencies
+                if isinstance(dev_dependencies, dict)
+                else {},
+                "workspaces": manifest.get("workspaces"),
+                "content": raw_manifest,
+                "error": None
+                if valid_identity
+                else "Manifest must include a valid npm package name and a non-empty version.",
+            }
+        )
+    canonical_url = repository_metadata.get("html_url")
+    try:
+        canonical_repository = (
+            _normalize_public_github_url(canonical_url)[1]
+            if isinstance(canonical_url, str)
+            else None
+        )
+    except ScanError:
+        canonical_repository = None
+    if canonical_repository != repository:
+        canonical_url = normalized_url
+    return {
+        "repository": {
+            "url": normalized_url,
+            "canonicalUrl": canonical_url,
+            "name": repository_metadata.get("full_name"),
+            "description": repository_metadata.get("description"),
+            "defaultBranch": default_branch,
+            "defaultBranchCommit": default_commit.lower(),
+            "private": bool(repository_metadata.get("private")),
+            "updatedAt": repository_metadata.get("updated_at"),
+        },
+        "branches": [
+            {"name": item["name"], "commit": item.get("commit", {}).get("sha")}
+            for item in branches
+            if isinstance(item, dict)
+            and isinstance(item.get("name"), str)
+            and isinstance(item.get("commit"), dict)
+        ],
+        "tags": [
+            {"name": item["name"], "commit": item.get("commit", {}).get("sha")}
+            for item in tags
+            if isinstance(item, dict)
+            and isinstance(item.get("name"), str)
+            and isinstance(item.get("commit"), dict)
+        ],
+        "releases": [
+            {
+                "name": item.get("name"),
+                "tag": item["tag_name"],
+                "url": item.get("html_url"),
+                "publishedAt": item.get("published_at"),
+            }
+            for item in releases
+            if isinstance(item, dict) and isinstance(item.get("tag_name"), str)
+        ],
+        "branchesComplete": len(branches) < 100,
+        "tagsComplete": len(tags) < 100,
+        "releasesComplete": len(releases) < 100,
+        "manifests": manifests,
+        "listingComplete": True,
+    }
 
 
 def _expected_digest(metadata: Dict[str, Any]) -> Tuple[Optional[str], Optional[bytes]]:
@@ -875,6 +1131,34 @@ def _resolve_source(
     return None, f"v{version}", False, "No exact version tag or npm gitHead was available."
 
 
+def _resolve_repository_revision(
+    repository: Tuple[str, str], revision: str, package_git_head: Any
+) -> Tuple[str, str, bool, str]:
+    if (
+        not revision
+        or len(revision) > 255
+        or revision.startswith(("/", "-"))
+        or "\\" in revision
+        or any(ord(char) < 32 for char in revision)
+        or ".." in revision.split("/")
+    ):
+        raise ScanError("Enter a valid GitHub commit, tag, or branch.", status_code=422)
+    owner, repository_name = repository
+    revision_url = (
+        f"https://{GITHUB_API_HOST}/repos/{quote(owner, safe='')}/"
+        f"{quote(repository_name, safe='')}/commits/{quote(revision, safe='')}"
+    )
+    metadata = _fetch_github_json(revision_url)
+    commit = metadata.get("sha") if isinstance(metadata, dict) else None
+    if not isinstance(commit, str) or not re.fullmatch(r"[a-fA-F0-9]{40,64}", commit):
+        raise ScanError("GitHub did not resolve the selected source revision to a commit.")
+    exact_package_revision = (
+        isinstance(package_git_head, str)
+        and package_git_head.casefold() == commit.casefold()
+    )
+    return commit.lower(), revision, exact_package_revision, "selected"
+
+
 def _download_source_archive(
     owner: str, repository_name: str, commit: str, destination: Path
 ) -> None:
@@ -1320,7 +1604,13 @@ def list_scans() -> List[Dict[str, Any]]:
     ]
 
 
-def run_scan(package_name: str, requested_version: str) -> Dict[str, Any]:
+def run_scan(
+    package_name: str,
+    requested_version: str,
+    repository_url: Optional[str] = None,
+    manifest_path: Optional[str] = None,
+    source_revision: Optional[str] = None,
+) -> Dict[str, Any]:
     metadata = _registry_metadata(package_name)
     versions = metadata.get("versions")
     dist_tags = metadata.get("dist-tags") or {}
@@ -1345,15 +1635,33 @@ def run_scan(package_name: str, requested_version: str) -> Dict[str, Any]:
     if not isinstance(dist, dict) or not isinstance(dist.get("tarball"), str):
         raise ScanError("npm version metadata did not include a tarball URL.")
     integrity_algorithm, integrity_digest = _expected_digest(version_metadata)
-    source_url, repository = _repository_url(version_metadata) if version_metadata.get("repository") else (None, None)
-    if repository is None and metadata.get("repository"):
-        source_url, repository = _repository_url(metadata)
+    npm_source_url, npm_source_repository = (
+        _repository_url(version_metadata)
+        if version_metadata.get("repository")
+        else (None, None)
+    )
+    if npm_source_repository is None and metadata.get("repository"):
+        npm_source_url, npm_source_repository = _repository_url(metadata)
+    if repository_url:
+        source_url, repository = _normalize_public_github_url(repository_url)
+    else:
+        source_url, repository = npm_source_url, npm_source_repository
     source_directory_error = None
-    try:
-        source_directory = _repository_directory(version_metadata) or _repository_directory(metadata)
-    except ScanError as exc:
-        source_directory = None
-        source_directory_error = str(exc)
+    if manifest_path is not None:
+        manifest_parts = _safe_member_parts(manifest_path)
+        if manifest_parts[-1] != "package.json":
+            raise ScanError("The selected repository manifest is not a package.json.")
+        source_directory = (
+            PurePosixPath(*manifest_parts[:-1]).as_posix()
+            if len(manifest_parts) > 1
+            else None
+        )
+    else:
+        try:
+            source_directory = _repository_directory(version_metadata) or _repository_directory(metadata)
+        except ScanError as exc:
+            source_directory = None
+            source_directory_error = str(exc)
 
     scan_id = str(uuid.uuid4())
     timestamp = datetime.now(timezone.utc).isoformat()
@@ -1362,6 +1670,7 @@ def run_scan(package_name: str, requested_version: str) -> Dict[str, Any]:
     source_tag = f"v{version}"
     exact_source_revision = False
     source_root: Optional[Path] = None
+    repository_manifest_content: Optional[str] = None
     source_manifest: Dict[str, Any] = {"artifactId": None, "sourceCommit": None, "files": []}
 
     with tempfile.TemporaryDirectory(prefix="killchain-") as workdir:
@@ -1386,9 +1695,33 @@ def run_scan(package_name: str, requested_version: str) -> Dict[str, Any]:
             source_error = source_directory_error
         else:
             try:
-                source_commit, source_tag, exact_source_revision, source_error = _resolve_source(
-                    repository, version_metadata, version
-                )
+                if source_revision:
+                    (
+                        source_commit,
+                        source_tag,
+                        exact_source_revision,
+                        _,
+                    ) = _resolve_repository_revision(
+                        repository,
+                        source_revision,
+                        version_metadata.get("gitHead"),
+                    )
+                    source_error = None
+                else:
+                    source_commit, source_tag, exact_source_revision, source_error = _resolve_source(
+                        repository, version_metadata, version
+                    )
+                if (
+                    repository_url
+                    and (
+                        npm_source_repository is None
+                        or tuple(
+                            part.casefold() for part in npm_source_repository
+                        )
+                        != tuple(part.casefold() for part in repository)
+                    )
+                ):
+                    exact_source_revision = False
                 if source_commit:
                     source_archive_root = root / "source"
                     source_archive_root.mkdir()
@@ -1402,14 +1735,45 @@ def run_scan(package_name: str, requested_version: str) -> Dict[str, Any]:
                     )
                     if not source_root.is_dir():
                         raise ScanError("The package repository directory was not present in the source archive.")
-                    source_archive_hash = hashlib.sha256()
-                    with source_archive.open("rb") as source_archive_file:
-                        for chunk in iter(lambda: source_archive_file.read(64 * 1024), b""):
-                            source_archive_hash.update(chunk)
-                    source_manifest = _build_manifest(
-                        source_root, source_archive_hash.hexdigest(), source_commit
-                    )
-                    source_resolved = True
+                    package_json_path = source_root / "package.json"
+                    if manifest_path is not None:
+                        if not package_json_path.is_file():
+                            source_error = (
+                                "The selected package.json was not present at the chosen source revision."
+                            )
+                            source_root = None
+                        elif package_json_path.stat().st_size > MAX_PACKAGE_JSON_BYTES:
+                            source_error = (
+                                "The selected package.json at this revision exceeds the manifest size limit."
+                            )
+                            source_root = None
+                    if source_root is not None and package_json_path.is_file():
+                        try:
+                            repository_manifest_content = package_json_path.read_text(
+                                encoding="utf-8"
+                            )
+                            repository_manifest = json.loads(repository_manifest_content)
+                        except (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+                            repository_manifest = None
+                        if manifest_path is not None and (
+                            not isinstance(repository_manifest, dict)
+                            or repository_manifest.get("name") != package_name
+                        ):
+                            source_error = (
+                                "The selected package.json at this revision does not identify "
+                                f"the npm package '{package_name}'."
+                            )
+                            source_root = None
+                            repository_manifest_content = None
+                    if source_root is not None:
+                        source_archive_hash = hashlib.sha256()
+                        with source_archive.open("rb") as source_archive_file:
+                            for chunk in iter(lambda: source_archive_file.read(64 * 1024), b""):
+                                source_archive_hash.update(chunk)
+                        source_manifest = _build_manifest(
+                            source_root, source_archive_hash.hexdigest(), source_commit
+                        )
+                        source_resolved = True
                 else:
                     source_root = None
             except ScanError as exc:
@@ -1494,6 +1858,23 @@ def run_scan(package_name: str, requested_version: str) -> Dict[str, Any]:
                 "commit": source_commit or "",
                 "tag": source_tag or "",
                 "match": exact_source_revision,
+                "association": (
+                    "npm-gitHead"
+                    if exact_source_revision
+                    else "user-selected"
+                    if source_revision
+                    else "release-tag"
+                    if source_commit and source_tag in (version, f"v{version}")
+                    else "unverified"
+                ),
+                "npmRepositoryMatch": (
+                    tuple(part.casefold() for part in npm_source_repository)
+                    == tuple(part.casefold() for part in repository)
+                    if repository_url and npm_source_repository and repository
+                    else None
+                ),
+                "manifestPath": manifest_path,
+                "packageManifest": repository_manifest_content,
                 "error": source_error,
                 "directory": source_directory,
             },

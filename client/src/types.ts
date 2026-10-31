@@ -41,6 +41,9 @@ export interface ScanResult {
     commit: string;
     tag: string;
     match: boolean;
+    association?: 'npm-gitHead' | 'release-tag' | 'user-selected' | 'unverified';
+    npmRepositoryMatch?: boolean | null;
+    manifestPath?: string | null;
     error?: string | null;
     directory?: string | null;
   };

@@ -16,12 +16,19 @@ KillChain analyzes whether a published npm package matches the source code it cl
 8. **Risk scoring** — Produces an evidence-based score (SAFE / WARN / CRITICAL) with transparent reasons.
 9. **AI explanation** — Converts deterministic findings into a plain-language summary and recommendation.
 10. **Scan history** — Past scans are persisted (SQLite) and browsable from the UI.
+11. **Public repository scans** — Inspects public GitHub repositories, lists root and nested npm manifests, and compares a user-selected package/version with its published artifact.
 
 ### Provenance verification
 
 The scanner retrieves the attestation bundle referenced by npm metadata and verifies SLSA provenance v1 using Sigstore's production trust roots. It checks the signing certificate's GitHub Actions or GitLab OIDC identity, the DSSE signature and transparency-log proof, the package/version and SHA-512 artifact digest, and the source repository and commit when those claims are available.
 
 Reports distinguish missing or unsupported attestations, unavailable verification data, invalid evidence, signed-claim mismatches, incomplete claims, and fully verified provenance. The pinned Sigstore verifier does not yet support Rekor `intoto/0.0.2` entries with integrated timestamps, so those bundles are reported as unsupported rather than invalid or verified. npm's separate `publish/v0.1` registry attestation is not currently evaluated. A verified attestation is evidence about the build claim; it does not prove that the source itself is safe.
+
+### Public repository scans
+
+Choose **GitHub repository** in the scanner and provide a public URL such as `https://github.com/owner/repository`. KILLCHAIN inspects the default-branch tree for every `package.json`, displays valid package candidates, and requires a selection when a repository contains multiple manifests. The manifest's npm package name and version are prefilled; choose an exact published version (the version can be changed if the manifest describes an unpublished development release).
+
+The default-branch commit is displayed as repository context only and is never silently treated as the release source. Leave the source revision blank to resolve npm `gitHead` or a matching version tag, or enter a specific commit, tag, or branch (suggestions include the first 100 discovered branches and tags). Manually selected revisions are labeled unverified unless npm metadata confirms the commit and repository. Repository content and package scripts are never executed. Very large GitHub trees and repositories with more than 100 package manifests are rejected rather than partially or arbitrarily inspected.
 
 ## Tech Stack
 
@@ -86,7 +93,7 @@ This starts:
 
 Press `Ctrl+C` to stop both processes cleanly.
 
-> Note: the frontend API client targets the deployed backend (`https://killchain.onrender.com/api`). Point `client/src/api.ts` at `http://localhost:8000/api` to use a fully local setup.
+> In development, Vite proxies `/api` requests to the local backend on port 8000. Set `VITE_API_BASE_URL` to override the API endpoint; production defaults to `https://killchain.onrender.com/api`.
 
 ## API
 
@@ -96,6 +103,8 @@ Press `Ctrl+C` to stop both processes cleanly.
 | GET    | `/api/scan/{scan_id}` | Fetch full results for a scan        |
 | GET    | `/api/scans`          | List past scans                      |
 | POST   | `/api/packages/fetch` | Fetch package metadata from npm      |
+| POST   | `/api/repositories/inspect` | Inspect a public GitHub repository and discover package manifests |
+| POST   | `/api/repositories/scan` | Scan a selected repository package against its exact npm version |
 
 ## CI/CD
 

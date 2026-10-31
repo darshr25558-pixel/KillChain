@@ -2,11 +2,42 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 
 from helper.functions import fetch_package_metadata
-from helper.scanner import ScanError, get_scan, list_scans, run_scan, save_scan
-from models.models import Package
+from helper.scanner import (
+    ScanError,
+    get_scan,
+    inspect_public_repository,
+    list_scans,
+    run_scan,
+    save_scan,
+)
+from models.models import Package, RepositoryInspect, RepositoryScan
 
 
 Fetch_router = APIRouter(tags=["packages", "scans"], prefix="/api")
+
+
+@Fetch_router.post("/repositories/inspect")
+def inspect_repository(req: RepositoryInspect):
+    try:
+        return inspect_public_repository(req.repository_url)
+    except ScanError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@Fetch_router.post("/repositories/scan", status_code=201)
+def create_repository_scan(req: RepositoryScan):
+    try:
+        result = run_scan(
+            req.name,
+            req.version,
+            repository_url=req.repository_url,
+            manifest_path=req.manifest_path,
+            source_revision=req.revision,
+        )
+        save_scan(result)
+    except ScanError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return {"id": result["id"]}
 
 
 @Fetch_router.post("/scan", status_code=201)
