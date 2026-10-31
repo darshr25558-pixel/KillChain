@@ -23,3 +23,5 @@ client/*.njsproj
 client/*.sln
 client/*.sw?
 backend/venv
+backend/data/
+backend/.artifacts/

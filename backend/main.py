@@ -1,13 +1,10 @@
 from fastapi import FastAPI
+from routes.routes import Fetch_router
 
 app = FastAPI()
+app.include_router(Fetch_router)
 
 
-@app.get("/")
-def read_root():
-    return {"Hello": "World"}
-
-
-@app.get("/items/{item_id}")
-def read_item(item_id: int, q: str | None = None):
-    return {"item_id": item_id, "q": q}
+@app.get("/health")
+def get_health():
+    return {"status": "ok"}

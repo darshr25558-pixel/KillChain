@@ -12,8 +12,12 @@ trap cleanup SIGINT SIGTERM
 
 echo "Starting FastAPI Backend..."
 cd backend || exit 1
+PYTHON_BIN=python3
+if [ -x venv/bin/python ]; then
+    PYTHON_BIN=venv/bin/python
+fi
 # Run backend in the background and save its process ID (PID)
-python3 -m uvicorn main:app --host 0.0.0.0 --port 8080 &
+"$PYTHON_BIN" -m uvicorn main:app --host 0.0.0.0 --port 8000 &
 BACKEND_PID=$!
 
 # Move back to root directory
