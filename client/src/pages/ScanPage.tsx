@@ -1,4 +1,4 @@
-import { useState, FormEvent } from 'react';
+import { useState, type FormEvent } from 'react';
 import { startScan } from '../api';
 
 export function ScanPage({ onScanComplete }: { onScanComplete: (id: string) => void }) {
@@ -6,6 +6,8 @@ export function ScanPage({ onScanComplete }: { onScanComplete: (id: string) => v
   const [version, setVersion] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+
+  const samplePackages = ['lodash', 'express', 'chalk', 'event-stream'];
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -16,30 +18,73 @@ export function ScanPage({ onScanComplete }: { onScanComplete: (id: string) => v
       const res = await startScan(name.trim(), version.trim());
       onScanComplete(res.id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Scan failed');
+      setError(err instanceof Error ? err.message : 'Scan request failed');
     } finally {
       setLoading(false);
     }
   }
 
+  function handleSelectPreset(pkg: string) {
+    setName(pkg);
+    setVersion('');
+  }
+
   return (
     <div className="card">
-      <h2>Scan Package</h2>
+      <div className="card-header">
+        <span className="card-step-badge">SCANNER</span>
+        <h2 className="card-title">Analyze Published Package</h2>
+      </div>
+
       <form onSubmit={handleSubmit}>
-        <div style={{ marginBottom: 8 }}>
-          <label>Package Name: </label>
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. lodash" />
+        <div className="form-group">
+          <label className="form-label">Package Name (npm)</label>
+          <input
+            className="form-input"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. lodash, express, axios"
+            disabled={loading}
+          />
         </div>
-        <div style={{ marginBottom: 8 }}>
-          <label>Version: </label>
-          <input value={version} onChange={(e) => setVersion(e.target.value)} placeholder="latest" />
+
+        <div className="form-group">
+          <label className="form-label">Version (optional, defaults to latest)</label>
+          <input
+            className="form-input"
+            value={version}
+            onChange={(e) => setVersion(e.target.value)}
+            placeholder="e.g. 4.17.21"
+            disabled={loading}
+          />
         </div>
-        <button type="submit" disabled={loading || !name.trim()}>
-          {loading ? 'Scanning...' : 'Start Scan'}
-        </button>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 18 }}>
+          <button type="submit" className="btn-primary" disabled={loading || !name.trim()}>
+            {loading ? 'Analyzing Package...' : 'Start Integrity Scan'}
+          </button>
+        </div>
       </form>
-      {error && <p style={{ color: 'red' }}>{error}</p>}
+
+      <div className="presets-container">
+        <span>Quick select:</span>
+        {samplePackages.map((pkg) => (
+          <button
+            key={pkg}
+            type="button"
+            className="preset-chip"
+            onClick={() => handleSelectPreset(pkg)}
+          >
+            {pkg}
+          </button>
+        ))}
+      </div>
+
+      {error && (
+        <div className="error-banner">
+          <strong>Error:</strong> {error}
+        </div>
+      )}
     </div>
   );
 }
-

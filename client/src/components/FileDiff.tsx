@@ -1,4 +1,4 @@
-import { DiffItem } from '../types';
+import type { DiffItem } from '../types';
 
 export function FileDiff({ diffs }: { diffs: DiffItem[] }) {
   function getBadgeClass(status: DiffItem['status']) {
@@ -9,11 +9,14 @@ export function FileDiff({ diffs }: { diffs: DiffItem[] }) {
 
   return (
     <div className="card">
-      <h3>5. Source vs Package Comparison</h3>
-      <table>
+      <div className="card-header">
+        <span className="card-step-badge">05</span>
+        <h3 className="card-title">Source vs. Package Comparison</h3>
+      </div>
+      <table className="data-table">
         <thead>
           <tr>
-            <th>Status</th>
+            <th style={{ width: 140 }}>Difference Type</th>
             <th>File Path</th>
           </tr>
         </thead>
@@ -30,7 +33,7 @@ export function FileDiff({ diffs }: { diffs: DiffItem[] }) {
           ))}
           {diffs.length === 0 && (
             <tr>
-              <td colSpan={2}>No file differences detected. Package matches source exactly.</td>
+              <td colSpan={2} className="empty-state">No file discrepancies detected between source repository and package.</td>
             </tr>
           )}
         </tbody>
@@ -38,4 +41,3 @@ export function FileDiff({ diffs }: { diffs: DiffItem[] }) {
     </div>
   );
 }
-

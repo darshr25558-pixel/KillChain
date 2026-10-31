@@ -1,4 +1,4 @@
-import { SecurityItem } from '../types';
+import type { SecurityItem } from '../types';
 
 export function SecurityFindings({ findings }: { findings: SecurityItem[] }) {
   function getSeverityClass(sev: SecurityItem['severity']) {
@@ -9,13 +9,16 @@ export function SecurityFindings({ findings }: { findings: SecurityItem[] }) {
 
   return (
     <div className="card">
-      <h3>7. Security Analysis</h3>
-      <table>
+      <div className="card-header">
+        <span className="card-step-badge">07</span>
+        <h3 className="card-title">Security & Suspicious Code Analysis</h3>
+      </div>
+      <table className="data-table">
         <thead>
           <tr>
-            <th>Severity</th>
-            <th>Detection Rule</th>
-            <th>File Location</th>
+            <th style={{ width: 120 }}>Severity</th>
+            <th style={{ width: 220 }}>Security Rule</th>
+            <th>Target Location</th>
           </tr>
         </thead>
         <tbody>
@@ -32,7 +35,7 @@ export function SecurityFindings({ findings }: { findings: SecurityItem[] }) {
           ))}
           {findings.length === 0 && (
             <tr>
-              <td colSpan={3}>No suspicious patterns or malicious behaviors detected.</td>
+              <td colSpan={3} className="empty-state">No suspicious code patterns, backdoors, or malicious calls found.</td>
             </tr>
           )}
         </tbody>
@@ -40,4 +43,3 @@ export function SecurityFindings({ findings }: { findings: SecurityItem[] }) {
     </div>
   );
 }
-

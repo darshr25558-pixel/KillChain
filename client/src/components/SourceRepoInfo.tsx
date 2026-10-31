@@ -1,32 +1,35 @@
-import { ScanResult } from '../types';
+import type { ScanResult } from '../types';
 
 export function SourceRepoInfo({ data }: { data: ScanResult['source'] }) {
   return (
     <div className="card">
-      <h3>3. Source Repository Retrieval</h3>
-      <table>
+      <div className="card-header">
+        <span className="card-step-badge">03</span>
+        <h3 className="card-title">Source Repository Retrieval & Release Matching</h3>
+      </div>
+      <table className="data-table">
         <tbody>
           <tr>
-            <td><strong>Repository URL</strong></td>
+            <td style={{ width: 220 }}><strong>Source Repository</strong></td>
             <td>
-              <a href={data.repoUrl} target="_blank" rel="noreferrer">
+              <a href={data.repoUrl} target="_blank" rel="noreferrer" style={{ color: '#2563eb' }}>
                 {data.repoUrl}
               </a>
             </td>
           </tr>
           <tr>
-            <td><strong>Release Tag</strong></td>
+            <td><strong>Release Git Tag</strong></td>
             <td><code>{data.tag}</code></td>
           </tr>
           <tr>
-            <td><strong>Release Commit</strong></td>
+            <td><strong>Target Commit SHA</strong></td>
             <td><code>{data.commit}</code></td>
           </tr>
           <tr>
-            <td><strong>Source Commit Match</strong></td>
+            <td><strong>Commit Match Status</strong></td>
             <td>
               <span className={`badge ${data.match ? 'badge-safe' : 'badge-warn'}`}>
-                {data.match ? 'MATCHED' : 'UNVERIFIED'}
+                {data.match ? 'MATCHED RELEASE COMMIT' : 'UNVERIFIED TAG'}
               </span>
             </td>
           </tr>
@@ -35,4 +38,3 @@ export function SourceRepoInfo({ data }: { data: ScanResult['source'] }) {
     </div>
   );
 }
-
