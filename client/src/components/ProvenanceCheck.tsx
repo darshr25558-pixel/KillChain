@@ -11,23 +11,26 @@ export function ProvenanceCheck({ data }: { data: ScanResult['provenance'] }) {
       title="Provenance & Build Attestation"
       icon={BadgeCheck}
       badge={
-        <Badge variant={data.verified ? 'safe' : data.signed ? 'warn' : 'crit'}>
-          {data.verified ? 'ATTESTATION VERIFIED' : data.signed ? 'SIGNED ONLY' : 'UNSIGNED'}
+        <Badge variant={data.verified ? 'safe' : 'warn'}>
+          {data.verified ? 'ATTESTATION VERIFIED' : data.signed ? 'ATTESTATION FOUND' : 'NOT AVAILABLE'}
         </Badge>
       }
     >
       <DataRow label="Cryptographic Signature">
-        <Badge variant={data.signed ? 'safe' : 'warn'}>
-          {data.signed ? 'SIGNED (Sigstore / npm)' : 'UNSIGNED'}
+        <Badge variant="warn">
+          {data.signed ? 'METADATA PRESENT; SIGNATURE UNVERIFIED' : 'NO ATTESTATION METADATA'}
         </Badge>
       </DataRow>
       <DataRow label="Source-to-Build Verification">
         <span style={{ fontSize: 13, color: data.verified ? 'var(--safe)' : 'var(--crit)' }}>
           {data.verified
-            ? '✓ Provenance verified: build generated directly from GitHub Actions runner'
-            : '✗ No verified build attestation or claims mismatch'}
+            ? '✓ Provenance claims were verified'
+            : data.signed
+              ? 'Attestation metadata exists, but this scanner does not verify its signature or claims.'
+              : 'No verified build attestation was available; this is not evidence that a package is unsigned.'}
         </span>
       </DataRow>
+      {data.note && <DataRow label="Verification Notes">{data.note}</DataRow>}
       {data.attestationUrl && (
         <DataRow label="Attestation Ledger">
           <a

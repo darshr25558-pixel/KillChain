@@ -119,7 +119,7 @@ export function ResultsPage({ scanId, onBack }: { scanId: string; onBack: () => 
       {/* Step 09: Threat Risk Score Hero */}
       <RiskScore data={result.risk} />
 
-      {/* Step 10: AI Synthesis */}
+      {/* Step 10: Deterministic explanation */}
       <AIExplanation data={result.aiExplanation} />
 
       {/* 2-Column Grid: Steps 01 & 02 */}
@@ -135,7 +135,12 @@ export function ResultsPage({ scanId, onBack }: { scanId: string; onBack: () => 
       </div>
 
       {/* Step 04: File Manifest Full Width */}
-      <FileManifest items={result.manifest} />
+      <FileManifest
+        items={result.manifest}
+        sourceItems={result.sourceManifest?.files ?? []}
+        artifactId={result.publishedManifest?.artifactId}
+        sourceCommit={result.source.commit}
+      />
 
       {/* Step 05: File Diff Full Width */}
       <FileDiff diffs={result.diff} />

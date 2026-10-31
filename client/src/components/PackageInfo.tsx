@@ -23,16 +23,26 @@ export function PackageInfo({ data }: { data: ScanResult['pkg'] }) {
       <DataRow label="Registry Tarball">
         <CodeBlock truncate copyable>{data.tarballUrl}</CodeBlock>
       </DataRow>
-      <DataRow label="Integrity Shasum">
+      <DataRow label="Registry Integrity Digest">
+        <CodeBlock truncate copyable>{data.integrity || data.shasum}</CodeBlock>
+      </DataRow>
+      <DataRow label={data.shasumVerified ? 'Verified Registry SHA-1' : 'Computed SHA-1'}>
         <CodeBlock truncate copyable>{data.shasum}</CodeBlock>
       </DataRow>
       <DataRow label="Registry Status">
         <span style={{ fontSize: 13, color: data.verified ? 'var(--safe)' : 'var(--crit)' }}>
           {data.verified
-            ? '✓ Tarball matches published registry shasum'
-            : '✗ Shasum mismatch detected against registry'}
+            ? data.shasumVerified
+              ? '✓ Tarball matches the registry integrity digest and SHA-1 shasum'
+              : '✓ Tarball matches the registry integrity digest'
+            : '✗ Tarball does not match the registry digest'}
         </span>
       </DataRow>
+      {data.artifactId && (
+        <DataRow label="Artifact SHA-256">
+          <CodeBlock truncate copyable>{data.artifactId}</CodeBlock>
+        </DataRow>
+      )}
     </Card>
   );
 }

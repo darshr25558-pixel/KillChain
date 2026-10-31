@@ -6,8 +6,8 @@ import { EmptyState } from './ui/EmptyState';
 
 export function BuildArtifacts({ items }: { items: ArtifactItem[] }) {
   function getBadgeVariant(kind: string): BadgeVariant {
-    if (kind === 'unexpected') return 'crit';
-    if (kind === 'minified') return 'warn';
+    if (kind === 'unexplained' || kind === 'unexpected') return 'crit';
+    if (['build-output', 'minified', 'source-map', 'declaration', 'platform-binary'].includes(kind)) return 'warn';
     return 'safe';
   }
 
@@ -20,8 +20,8 @@ export function BuildArtifacts({ items }: { items: ArtifactItem[] }) {
     >
       {items.length === 0 ? (
         <EmptyState
-          title="No Extra Artifacts"
-          description="All package files match expected source file definitions."
+          title="No File Differences to Classify"
+          description="Check the source status and comparison summary to distinguish an exact match from an unavailable source."
         />
       ) : (
         <div className="table-responsive-wrapper">

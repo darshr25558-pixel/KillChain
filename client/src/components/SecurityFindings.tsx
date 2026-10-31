@@ -25,8 +25,8 @@ export function SecurityFindings({ findings }: { findings: SecurityItem[] }) {
     >
       {findings.length === 0 ? (
         <EmptyState
-          title="Zero Suspicious Findings"
-          description="No obfuscated code patterns, backdoors, unauthorized network calls, or unexpected fs operations detected."
+          title="No Configured Static Signals Matched"
+          description="The limited static rules found no matches in the analyzed files. This is not a guarantee that the package is safe."
         />
       ) : (
         <div className="table-responsive-wrapper">
@@ -36,6 +36,7 @@ export function SecurityFindings({ findings }: { findings: SecurityItem[] }) {
                 <th style={{ width: 130 }}>Severity</th>
                 <th style={{ width: 220 }}>Security Rule</th>
                 <th>Target Location</th>
+                <th>Evidence</th>
               </tr>
             </thead>
             <tbody>
@@ -48,6 +49,15 @@ export function SecurityFindings({ findings }: { findings: SecurityItem[] }) {
                   </td>
                   <td><strong>{item.rule}</strong></td>
                   <td><code>{item.file}</code></td>
+                  <td>
+                    <span>{item.description}</span>
+                    {item.evidence && (
+                      <pre style={{ maxWidth: 320, margin: '6px 0 0', overflowX: 'auto', whiteSpace: 'pre-wrap' }}>
+                        {item.evidence}
+                      </pre>
+                    )}
+                    {item.confidence && <small>Confidence: {item.confidence}</small>}
+                  </td>
                 </tr>
               ))}
             </tbody>

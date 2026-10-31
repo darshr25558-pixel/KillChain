@@ -46,6 +46,12 @@ export function FileDiff({ diffs }: { diffs: DiffItem[] }) {
                   </td>
                   <td>
                     <code>{d.path}</code>
+                    {d.textDiff && (
+                      <details>
+                        <summary>View text diff</summary>
+                        <pre style={{ maxWidth: '100%', overflowX: 'auto' }}>{d.textDiff}</pre>
+                      </details>
+                    )}
                   </td>
                 </tr>
               ))}

@@ -7,11 +7,11 @@ export function AIExplanation({ data }: { data: ScanResult['aiExplanation'] }) {
   return (
     <Card
       step="10"
-      title="AI Security Explanation & Context"
-      subtitle="Plain-language synthesis grounded in deterministic findings"
+      title="Deterministic Scan Summary"
+      subtitle="Rules-based explanations grounded in scanner evidence"
       icon={Sparkles}
       accent="indigo"
-      badge={<span className="brand-tag">Gemma 2 Analysis</span>}
+      badge={<span className="brand-tag">Rules-based</span>}
     >
       <DataRow label="Executive Summary">
         <p style={{ lineHeight: 1.6, margin: 0 }}>{data.summary}</p>
@@ -37,7 +37,7 @@ export function AIExplanation({ data }: { data: ScanResult['aiExplanation'] }) {
       </div>
 
       <div className="ai-badge-gemma">
-        Generated with Google Gemma · Grounded in verifiable static scan evidence
+        Generated from scanner evidence; no AI model is invoked.
       </div>
     </Card>
   );
