@@ -19,6 +19,11 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import quote, unquote, urljoin, urlsplit
 
 import requests
+from cryptography import x509
+from sigstore.errors import NetworkError, RootError, TUFError, VerificationError
+from sigstore.models import Bundle, InvalidBundle
+from sigstore.verify import Verifier
+from sigstore.verify.policy import AnyOf, Identity
 
 from helper.functions import _version_sort_key
 
@@ -30,8 +35,14 @@ MAX_EXTRACTED_BYTES = 300 * 1024 * 1024
 MAX_FILE_BYTES = 25 * 1024 * 1024
 MAX_FILES = 20_000
 MAX_METADATA_BYTES = 20 * 1024 * 1024
+MAX_ATTESTATION_BYTES = 10 * 1024 * 1024
 MAX_TEXT_DIFF_BYTES = 64 * 1024
 MAX_DIFF_LINES = 120
+SLSA_PROVENANCE_V1 = "https://slsa.dev/provenance/v1"
+IN_TOTO_STATEMENT_V1 = "https://in-toto.io/Statement/v1"
+GITHUB_ACTIONS_ISSUER = "https://token.actions.githubusercontent.com"
+GITLAB_ISSUER = "https://gitlab.com"
+ALLOWED_OIDC_ISSUERS = (GITHUB_ACTIONS_ISSUER, GITLAB_ISSUER)
 
 
 class ScanError(Exception):
@@ -43,11 +54,11 @@ class ScanError(Exception):
 
 
 def _validate_url(url: str, allowed_hosts: Iterable[str]) -> None:
-    parsed = urlsplit(url)
     try:
+        parsed = urlsplit(url)
         valid_port = parsed.port in (None, 443)
     except ValueError:
-        valid_port = False
+        raise ScanError("A download URL was malformed.")
     if parsed.scheme != "https" or parsed.hostname not in allowed_hosts or parsed.username or parsed.password or not valid_port:
         raise ScanError("A download URL did not match the scanner's HTTPS host policy.")
 
@@ -108,7 +119,9 @@ def _read_limited_response(response: requests.Response, limit: int) -> bytes:
     return bytes(content)
 
 
-def _fetch_json(url: str, allowed_hosts: Iterable[str]) -> Dict[str, Any]:
+def _fetch_json(
+    url: str, allowed_hosts: Iterable[str], max_bytes: int = MAX_METADATA_BYTES
+) -> Dict[str, Any]:
     response = _open_response(url, allowed_hosts, {"Accept": "application/json"})
     if response.status_code != 200:
         status = response.status_code
@@ -117,10 +130,10 @@ def _fetch_json(url: str, allowed_hosts: Iterable[str]) -> Dict[str, Any]:
             f"Remote metadata request failed with HTTP {status}.",
             status_code=404 if status == 404 else 502,
         )
-    body = _read_limited_response(response, MAX_METADATA_BYTES)
+    body = _read_limited_response(response, max_bytes)
     try:
         data = json.loads(body)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
         raise ScanError("Remote server returned invalid JSON metadata.") from exc
     if not isinstance(data, dict):
         raise ScanError("Remote metadata had an unexpected format.")
@@ -153,6 +166,346 @@ def _expected_digest(metadata: Dict[str, Any]) -> Tuple[Optional[str], Optional[
     if isinstance(shasum, str) and re.fullmatch(r"[a-fA-F0-9]{40}", shasum):
         return "sha1", bytes.fromhex(shasum)
     return None, None
+
+
+def _normalize_github_repository(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    candidate = value.removeprefix("git+")
+    try:
+        parsed = urlsplit(candidate)
+    except ValueError:
+        return None
+    if parsed.scheme != "https" or parsed.hostname != "github.com":
+        return None
+    path = unquote(parsed.path).strip("/").split("@", 1)[0].removesuffix(".git")
+    parts = path.split("/")
+    if len(parts) != 2 or not all(parts):
+        return None
+    return "/".join(part.casefold() for part in parts)
+
+
+def _verify_npm_provenance(
+    dist: Dict[str, Any],
+    package_name: str,
+    version: str,
+    artifact_sha512: str,
+    repository: Optional[Tuple[str, str]],
+    source_commit: Optional[str],
+) -> Dict[str, Any]:
+    metadata = dist.get("attestations")
+    result: Dict[str, Any] = {
+        "signed": bool(metadata),
+        "verified": False,
+        "cryptographicVerified": False,
+        "status": "unavailable",
+        "note": "No npm provenance attestation was available.",
+    }
+    if not metadata:
+        return result
+
+    attestation_url = metadata.get("url") if isinstance(metadata, dict) else None
+    if not isinstance(attestation_url, str):
+        result.update(
+            status="unsupported",
+            note="npm reported attestation metadata without a supported registry bundle URL.",
+        )
+        return result
+    try:
+        _validate_url(attestation_url, (REGISTRY_HOST,))
+        attestations = _fetch_json(
+            attestation_url, (REGISTRY_HOST,), MAX_ATTESTATION_BYTES
+        ).get("attestations")
+    except ScanError as exc:
+        result.update(
+            status="verification-unavailable",
+            note=f"Unable to retrieve npm provenance evidence: {exc}",
+        )
+        return result
+    result["attestationUrl"] = attestation_url
+    if not isinstance(attestations, list):
+        result.update(
+            status="invalid",
+            note="The npm attestation endpoint returned an invalid response shape.",
+        )
+        return result
+
+    slsa_attestation = next(
+        (
+            item
+            for item in attestations
+            if isinstance(item, dict)
+            and item.get("predicateType") == SLSA_PROVENANCE_V1
+        ),
+        None,
+    )
+    if slsa_attestation is None or not isinstance(slsa_attestation.get("bundle"), dict):
+        result.update(
+            status="unsupported",
+            note="No supported SLSA provenance bundle was included in npm's attestations.",
+        )
+        return result
+
+    bundle_data = slsa_attestation["bundle"]
+    verification_material = bundle_data.get("verificationMaterial")
+    log_entries = (
+        verification_material.get("tlogEntries")
+        if isinstance(verification_material, dict)
+        else None
+    )
+    if isinstance(log_entries, list):
+        for log_entry in log_entries:
+            if not isinstance(log_entry, dict):
+                continue
+            kind_version = log_entry.get("kindVersion")
+            if (
+                log_entry.get("integratedTime") is not None
+                and log_entry.get("inclusionPromise") is not None
+                and isinstance(kind_version, dict)
+                and not (
+                    kind_version.get("kind") in ("dsse", "hashedrekord")
+                    and kind_version.get("version") == "0.0.1"
+                )
+            ):
+                result.update(
+                    status="unsupported",
+                    note=(
+                        "The Sigstore verifier does not support this Rekor entry "
+                        f"format ({kind_version.get('kind')}/{kind_version.get('version')}) "
+                        "with an integrated timestamp; no cryptographic verification was claimed."
+                    ),
+                )
+                return result
+
+    try:
+        bundle = Bundle.from_json(json.dumps(bundle_data))
+        certificate = bundle.signing_certificate
+        sans = certificate.extensions.get_extension_for_class(
+            x509.SubjectAlternativeName
+        ).value.get_values_for_type(x509.UniformResourceIdentifier)
+    except (InvalidBundle, ValueError, x509.ExtensionNotFound, KeyError, TypeError) as exc:
+        result.update(
+            status="invalid",
+            note=f"The SLSA provenance bundle or signing identity is malformed: {exc}",
+        )
+        return result
+
+    expected_repository = (
+        "/".join(part.casefold() for part in repository) if repository else None
+    )
+    identities: List[Tuple[str, str]] = []
+    for issuer in ALLOWED_OIDC_ISSUERS:
+        expected_host = (
+            "github.com" if issuer == GITHUB_ACTIONS_ISSUER else "gitlab.com"
+        )
+        for identity in sans:
+            try:
+                parsed_identity = urlsplit(identity)
+            except ValueError:
+                continue
+            if parsed_identity.scheme != "https" or parsed_identity.hostname != expected_host:
+                continue
+            identities.append((identity, issuer))
+    if not identities:
+        result.update(
+            status="unsupported",
+            note="The signing certificate did not contain a supported GitHub or GitLab build identity.",
+        )
+        return result
+
+    try:
+        payload_type, payload = Verifier.production().verify_dsse(
+            bundle,
+            AnyOf(
+                [
+                    Identity(identity=identity, issuer=issuer)
+                    for identity, issuer in identities
+                ]
+            ),
+        )
+    except (NetworkError, RootError, TUFError) as exc:
+        result.update(
+            status="verification-unavailable",
+            note=f"Sigstore trust data could not be loaded or refreshed: {exc}",
+        )
+        return result
+    except VerificationError as exc:
+        if str(exc).startswith("Unsupported DSSE log entry type:"):
+            result.update(
+                status="unsupported",
+                note=f"The Sigstore verifier does not support this Rekor DSSE entry: {exc}",
+            )
+            return result
+        result.update(
+            status="invalid",
+            note=f"Sigstore signature, certificate, transparency proof, or identity verification failed: {exc}",
+        )
+        return result
+
+    signer_identity = None
+    signer_issuer = None
+    for identity, issuer in identities:
+        try:
+            Identity(identity=identity, issuer=issuer).verify(certificate)
+        except VerificationError:
+            continue
+        signer_identity = identity
+        signer_issuer = issuer
+        break
+    if signer_identity is None or signer_issuer is None:
+        result.update(
+            status="invalid",
+            note="Sigstore verification completed without a matching supported signer identity.",
+        )
+        return result
+
+    if payload_type != "application/vnd.in-toto+json":
+        result.update(
+            status="invalid",
+            note=f"Unsupported provenance payload type: {payload_type}.",
+        )
+        return result
+    try:
+        statement = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+        result.update(
+            status="invalid",
+            note=f"The verified SLSA payload is not valid JSON: {exc}",
+        )
+        return result
+    if (
+        not isinstance(statement, dict)
+        or statement.get("_type") != IN_TOTO_STATEMENT_V1
+        or statement.get("predicateType") != SLSA_PROVENANCE_V1
+    ):
+        result.update(
+            status="invalid",
+            note="The verified DSSE payload is not an in-toto SLSA provenance statement.",
+        )
+        return result
+
+    expected_purl = (
+        f"pkg:npm/{quote(package_name, safe='/')}@{quote(version, safe='')}"
+    )
+    subjects = statement.get("subject")
+    subjects = subjects if isinstance(subjects, list) else []
+    package_identity_match = any(
+        isinstance(subject, dict) and subject.get("name") == expected_purl
+        for subject in subjects
+    )
+    artifact_digest_match = any(
+        isinstance(subject, dict)
+        and subject.get("name") == expected_purl
+        and isinstance(subject.get("digest"), dict)
+        and isinstance(subject["digest"].get("sha512"), str)
+        and subject["digest"]["sha512"].lower() == artifact_sha512.lower()
+        for subject in subjects
+    )
+    subject_match = package_identity_match and artifact_digest_match
+    predicate = statement.get("predicate")
+    build_definition = (
+        predicate.get("buildDefinition")
+        if isinstance(predicate, dict)
+        else None
+    )
+    build_definition = build_definition if isinstance(build_definition, dict) else {}
+    external_parameters = build_definition.get("externalParameters")
+    external_parameters = (
+        external_parameters if isinstance(external_parameters, dict) else {}
+    )
+    workflow = external_parameters.get("workflow")
+    workflow = workflow if isinstance(workflow, dict) else {}
+    source_repository = _normalize_github_repository(workflow.get("repository"))
+    repository_match = (
+        source_repository == expected_repository
+        if expected_repository is not None and source_repository is not None
+        else None
+    )
+    resolved_dependencies = build_definition.get("resolvedDependencies")
+    resolved_dependencies = (
+        resolved_dependencies if isinstance(resolved_dependencies, list) else []
+    )
+    source_commits = []
+    for dependency in resolved_dependencies:
+        if not isinstance(dependency, dict):
+            continue
+        dependency_repository = _normalize_github_repository(dependency.get("uri"))
+        digest = dependency.get("digest")
+        git_commit = digest.get("gitCommit") if isinstance(digest, dict) else None
+        if (
+            expected_repository is not None
+            and dependency_repository == expected_repository
+            and isinstance(git_commit, str)
+        ):
+            source_commits.append(git_commit)
+    commit_match = (
+        any(commit.casefold() == source_commit.casefold() for commit in source_commits)
+        if source_commit and source_commits
+        else None
+    )
+    signer_identity_parts = urlsplit(signer_identity).path.strip("/").split("/")
+    signer_repository = (
+        _normalize_github_repository(
+            f"https://github.com/{'/'.join(signer_identity_parts[:2])}"
+        )
+        if signer_issuer == GITHUB_ACTIONS_ISSUER
+        and len(signer_identity_parts) >= 2
+        else None
+    )
+    signer_repository_match = (
+        signer_repository == source_repository
+        if signer_issuer == GITHUB_ACTIONS_ISSUER
+        and signer_repository is not None
+        and source_repository is not None
+        else None
+    )
+    result.update(
+        cryptographicVerified=True,
+        artifactDigestMatch=artifact_digest_match,
+        packageIdentityMatch=package_identity_match,
+        sourceRepositoryMatch=repository_match,
+        sourceCommitMatch=commit_match,
+        signerRepositoryMatch=signer_repository_match,
+        signerIdentity=signer_identity,
+        issuer=signer_issuer,
+        sourceRepository=(
+            workflow.get("repository")
+            if isinstance(workflow.get("repository"), str)
+            else None
+        ),
+        sourceCommit=source_commits[0] if source_commits else None,
+        workflow=workflow.get("path") if isinstance(workflow.get("path"), str) else None,
+    )
+    if (
+        not subject_match
+        or repository_match is False
+        or commit_match is False
+        or signer_repository_match is False
+    ):
+        result.update(
+            status="verified-claims-mismatch",
+            note="The Sigstore signature is valid, but the artifact digest, package identity, source repository, source commit, or signer/workflow repository does not match this scan.",
+        )
+    elif (
+        repository_match is None
+        or source_commit is None
+        or commit_match is None
+        or (
+            signer_issuer == GITHUB_ACTIONS_ISSUER
+            and signer_repository_match is None
+        )
+    ):
+        result.update(
+            status="verified-claims-incomplete",
+            note="The Sigstore signature is valid, but the provenance did not contain enough source claims to fully match the npm metadata and resolved source revision.",
+        )
+    else:
+        result.update(
+            verified=True,
+            status="verified",
+            note="The Sigstore signature, certificate identity, transparency proof, artifact digest, package identity, and available source claims were verified.",
+        )
+    return result
 
 
 def _download_archive(
@@ -215,6 +568,7 @@ def _download_archive(
     return {
         "size": size,
         "sha256": sha256.hexdigest(),
+        "sha512": sha512.hexdigest(),
         "sha1": sha1.hexdigest(),
         "verified": verified,
         "algorithm": expected_algorithm,
@@ -843,7 +1197,7 @@ def _risk_score(
     integrity_verified: bool,
     source_resolved: bool,
     exact_source_revision: bool,
-    provenance_present: bool,
+    provenance_status: str,
     artifacts: List[Dict[str, str]],
     security: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
@@ -862,9 +1216,21 @@ def _risk_score(
         notes.append("Source was resolved from a version tag; the npm metadata did not provide an exact gitHead.")
     else:
         notes.append("The source archive was pinned to the npm gitHead commit.")
-    if not provenance_present:
+    if provenance_status in ("invalid", "verified-claims-mismatch"):
+        score += 20
+        notes.append(
+            "Provenance verification failed or its signed claims did not match this scan (+20)."
+        )
+    elif provenance_status != "verified":
         score += 5
-        notes.append("No provenance attestation was available for cryptographic verification.")
+        if provenance_status == "unavailable":
+            notes.append("No provenance attestation was available for cryptographic verification (+5).")
+        else:
+            notes.append(
+                f"Provenance was not fully verified ({provenance_status}) (+5)."
+            )
+    else:
+        notes.append("The provenance signature and available source claims were verified.")
 
     unexplained = sum(1 for artifact in artifacts if artifact["kind"] == "unexplained")
     if unexplained:
@@ -1059,23 +1425,27 @@ def run_scan(package_name: str, requested_version: str) -> Dict[str, Any]:
         artifacts, build_configuration = _build_analysis(source_root, differences)
         security = _security_findings(package_root, version_metadata, differences)
 
-        provenance_metadata = dist.get("attestations")
-        provenance_present = bool(provenance_metadata)
-        provenance = {
-            "signed": provenance_present,
-            "verified": False,
-            "status": "available-unverified" if provenance_present else "unavailable",
-            "note": (
-                "Attestation metadata exists, but signature and source claims were not cryptographically verified."
-                if provenance_present
-                else "No supported npm provenance attestation was present in the retrieved metadata."
-            ),
-        }
+        provenance_source_commit = source_commit
+        metadata_git_head = version_metadata.get("gitHead")
+        if (
+            provenance_source_commit is None
+            and isinstance(metadata_git_head, str)
+            and re.fullmatch(r"[a-fA-F0-9]{40,64}", metadata_git_head)
+        ):
+            provenance_source_commit = metadata_git_head
+        provenance = _verify_npm_provenance(
+            dist,
+            metadata.get("name", package_name),
+            version,
+            artifact["sha512"],
+            repository,
+            provenance_source_commit,
+        )
         risk = _risk_score(
             artifact["verified"],
             source_resolved,
             exact_source_revision,
-            provenance_present,
+            provenance["status"],
             artifacts,
             security,
         )

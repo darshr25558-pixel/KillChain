@@ -71,7 +71,7 @@ export function HomePage({ onStartScan }: { onStartScan: () => void }) {
             <div className="dim">├─ Building SHA-256 manifests and comparing paths...</div>
             <div className="dim">├─ Classifying common output and package exclusions...</div>
             <div className="dim">├─ Running limited static review rules...</div>
-            <div className="dim">├─ Reporting provenance as unverified unless independently checked...</div>
+            <div className="dim">├─ Verifying supported npm SLSA provenance with Sigstore...</div>
             <div className="dim">└─ Calculating a transparent heuristic risk score...</div>
             <div><span className="ok">✓</span> Report includes evidence and known limitations</div>
           </div>
@@ -166,7 +166,7 @@ export function HomePage({ onStartScan }: { onStartScan: () => void }) {
               <BadgeCheck size={20} />
             </div>
             <h3>8. Provenance Verification</h3>
-            <p>Reports whether attestation metadata is present. Signature and source-to-build claims are not cryptographically verified yet.</p>
+            <p>Verifies supported npm SLSA signatures and transparency proofs, then matches artifact digests and available source claims.</p>
           </div>
           <div className="feature-card">
             <div className="feature-icon-box icon-accent">
