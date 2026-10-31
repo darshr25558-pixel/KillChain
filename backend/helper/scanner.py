@@ -150,17 +150,62 @@ def _registry_metadata(package_name: str) -> Dict[str, Any]:
     return _fetch_json(url, (REGISTRY_HOST,))
 
 
-def _fetch_github_json(url: str) -> Any:
-    response = _open_response(url, (GITHUB_API_HOST,), {"Accept": "application/vnd.github+json"})
-    if response.status_code != 200:
-        status = response.status_code
+def _github_api_headers() -> Dict[str, str]:
+    headers = {"Accept": "application/vnd.github+json"}
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _github_response_error(response: requests.Response) -> ScanError:
+    status = response.status_code
+    if status == 404:
         response.close()
-        message = (
-            "The public GitHub repository was not found or is inaccessible."
-            if status == 404
-            else f"GitHub repository request failed with HTTP {status}."
+        return ScanError(
+            "The public GitHub repository was not found or is inaccessible.",
+            status_code=404,
         )
-        raise ScanError(message, status_code=404 if status == 404 else 502)
+    if status == 403:
+        rate_limit_remaining = response.headers.get("X-RateLimit-Remaining")
+        body = _read_limited_response(response, 64 * 1024)
+        try:
+            error_payload = json.loads(body)
+        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+            error_payload = {}
+        github_message = (
+            error_payload.get("message", "").lower()
+            if isinstance(error_payload, dict)
+            and isinstance(error_payload.get("message"), str)
+            else ""
+        )
+        if rate_limit_remaining == "0" or "rate limit" in github_message:
+            return ScanError(
+                "GitHub API rate limit exceeded. Configure a server-side GITHUB_TOKEN "
+                "for this backend or retry after the GitHub quota resets.",
+                status_code=503,
+            )
+        return ScanError(
+            "GitHub denied this request (HTTP 403). Confirm the repository is public "
+            "and accessible, then retry.",
+            status_code=502,
+        )
+    response.close()
+    if status == 401:
+        return ScanError(
+            "GitHub rejected the configured GITHUB_TOKEN. Check the backend environment setting.",
+            status_code=502,
+        )
+    return ScanError(
+        f"GitHub repository request failed with HTTP {status}.",
+        status_code=502,
+    )
+
+
+def _fetch_github_json(url: str) -> Any:
+    response = _open_response(url, (GITHUB_API_HOST,), _github_api_headers())
+    if response.status_code != 200:
+        raise _github_response_error(response)
     body = _read_limited_response(response, MAX_METADATA_BYTES)
     try:
         return json.loads(body)
@@ -1076,16 +1121,15 @@ def _resolve_source(
             f"{quote(repository_name, safe='')}/git/ref/tags/{quote(tag, safe='')}"
         )
         try:
-            response = _open_response(url, (GITHUB_API_HOST,), {"Accept": "application/vnd.github+json"})
+            response = _open_response(url, (GITHUB_API_HOST,), _github_api_headers())
         except ScanError as exc:
             return None, tag, False, str(exc)
         if response.status_code == 404:
             response.close()
             continue
         if response.status_code != 200:
-            status = response.status_code
-            response.close()
-            return None, tag, False, f"GitHub could not resolve source tag (HTTP {status})."
+            error = _github_response_error(response)
+            return None, tag, False, str(error)
         try:
             payload = json.loads(_read_limited_response(response, 1024 * 1024))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -1113,14 +1157,13 @@ def _resolve_source(
                 tag_response = _open_response(
                     tag_url,
                     (GITHUB_API_HOST,),
-                    {"Accept": "application/vnd.github+json"},
+                    _github_api_headers(),
                 )
             except ScanError as exc:
                 return None, tag, False, str(exc)
             if tag_response.status_code != 200:
-                status = tag_response.status_code
-                tag_response.close()
-                return None, tag, False, f"GitHub could not resolve the annotated version tag (HTTP {status})."
+                error = _github_response_error(tag_response)
+                return None, tag, False, str(error)
             try:
                 tag_payload = json.loads(_read_limited_response(tag_response, 1024 * 1024))
             except (UnicodeDecodeError, json.JSONDecodeError):

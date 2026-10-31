@@ -21,6 +21,8 @@ from helper.scanner import (
     _compare_manifests,
     _extract_tar,
     _extract_zip,
+    _fetch_github_json,
+    _github_api_headers,
     _normalize_public_github_url,
     _resolve_repository_revision,
     _resolve_source,
@@ -163,6 +165,59 @@ class ComparisonTests(unittest.TestCase):
 
 
 class RepositoryTests(unittest.TestCase):
+    def test_github_api_omits_authorization_header_without_token(self):
+        response = requests.Response()
+        response.status_code = 200
+        response.headers = {}
+        response._content = b"{}"
+        response._content_consumed = True
+        url = "https://api.github.com/repos/owner/repo"
+
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("helper.scanner._open_response", return_value=response) as open_response,
+        ):
+            self.assertEqual(_fetch_github_json(url), {})
+
+        self.assertEqual(open_response.call_args.args[2], {"Accept": "application/vnd.github+json"})
+
+    def test_github_api_uses_optional_server_side_token(self):
+        response = requests.Response()
+        response.status_code = 200
+        response.headers = {}
+        response._content = b"{}"
+        response._content_consumed = True
+        url = "https://api.github.com/repos/owner/repo"
+
+        with (
+            patch.dict("os.environ", {"GITHUB_TOKEN": " test-token "}),
+            patch("helper.scanner._open_response", return_value=response) as open_response,
+        ):
+            self.assertEqual(_fetch_github_json(url), {})
+
+        open_response.assert_called_once_with(
+            url,
+            ("api.github.com",),
+            {
+                "Accept": "application/vnd.github+json",
+                "Authorization": "Bearer test-token",
+            },
+        )
+
+    def test_github_api_rate_limit_error_explains_server_token_configuration(self):
+        response = requests.Response()
+        response.status_code = 403
+        response.headers = {"X-RateLimit-Remaining": "0"}
+        response._content = b'{"message":"API rate limit exceeded"}'
+        response._content_consumed = True
+
+        with patch("helper.scanner._open_response", return_value=response):
+            with self.assertRaises(ScanError) as raised:
+                _fetch_github_json("https://api.github.com/repos/owner/repo")
+
+        self.assertEqual(raised.exception.status_code, 503)
+        self.assertIn("GITHUB_TOKEN", str(raised.exception))
+
     def test_normalizes_public_github_repository_urls(self):
         normalized, repository = _normalize_public_github_url(
             "https://github.com/Owner/Repo.git/"
