@@ -20,19 +20,10 @@ fi
 "$PYTHON_BIN" -m uvicorn main:app --host 0.0.0.0 --port 8000 &
 BACKEND_PID=$!
 
-# Move back to root directory
-cd ..
+echo "Starting KILLCHAIN frontend on Vite dev server..."
+(cd client && npm run dev) &
+CLIENT_PID=$!
 
-echo "Starting Frontend..."
-cd client || exit 1
-# Run frontend in the background and save its process ID (PID)
-npm run dev &
-FRONTEND_PID=$!
-
-# Move back to root directory
-cd ..
-
-echo "Both processes running. Press Ctrl+C to stop both."
-
-# Wait indefinitely so the script doesn't exit prematurely
+trap "kill $BACKEND_PID $CLIENT_PID" EXIT
 wait
+

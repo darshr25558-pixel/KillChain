@@ -25,3 +25,4 @@ client/*.sw?
 backend/venv
 backend/data/
 backend/.artifacts/
+backend/__pycache__/

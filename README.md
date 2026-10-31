@@ -1,34 +1,85 @@
-# KILLCHAIN
+# KillChain
 
-KILLCHAIN compares an npm release archive with a GitHub source revision and returns
-a deterministic integrity report. Package lifecycle scripts and repository code
-are inspected as data only; the scanner does not install dependencies or execute
-package code.
+**Published Package vs Source Code Integrity Analyzer**
 
-## Run locally
+KillChain is a security tool that analyzes whether a published package (e.g. from npm or PyPI) matches the source code it claims to be built from, helping detect software supply-chain attacks such as typosquatting, dependency confusion, and malicious code injected at publish time.
 
-```sh
+> ⚠️ **Status:** Early stage / under active development. The project structure, setup scripts, and CI/CD pipeline are in place; the core analysis engine and UI are being built.
+
+## Tech Stack
+
+| Layer    | Technology                          |
+|----------|-------------------------------------|
+| Backend  | Python, FastAPI, Uvicorn            |
+| Frontend | React 19, TypeScript, Vite          |
+| Linting  | oxlint (client)                     |
+| Deploy   | Render (backend), Vercel (frontend) |
+| CI/CD    | GitHub Actions                      |
+
+## Project Structure
+
+```
+KillChain/
+├── backend/          # FastAPI backend
+│   ├── main.py       # API entry point
+│   ├── venv/         # Python virtual environment (created by install.sh)
+│   └── requirements.txt
+├── client/           # React + Vite frontend
+│   └── src/
+├── .github/
+│   └── workflows/    # CI/CD (main, test, render deploy)
+├── install.sh        # Installs client & backend dependencies
+├── run.sh            # Starts both frontend and backend together
+└── render.yaml       # Render deployment config
+```
+
+## Getting Started
+
+### Prerequisites
+
+- Python 3.11+
+- Node.js + npm
+
+### Install dependencies
+
+```bash
 ./install.sh
+```
+
+This installs client packages (`npm install` in `client/`), creates a Python virtual environment in `backend/venv`, and installs the backend requirements into it.
+
+### Run locally
+
+```bash
 ./run.sh
 ```
 
-The Vite frontend is available at `http://localhost:5173` and proxies `/api` to
-the FastAPI backend on port `8000`.
+This starts:
 
-## Scan API
+- **Backend** — Uvicorn serving the FastAPI app with auto-reload on `http://localhost:8000`
+- **Frontend** — Vite dev server (`npm run dev`)
 
-- `POST /api/scan` with `{"name":"react","version":"18.3.1"}` starts a scan and
-  returns its report ID. Omit `version` or use `"latest"` for the npm latest tag.
-- `GET /api/scan/{id}` returns the saved report.
-- `GET /api/scans` lists the latest 100 scans.
-- `GET /health` checks backend availability.
+Press `Ctrl+C` to stop both processes cleanly.
 
-Reports include npm integrity verification, safe archive extraction, published
-and source manifests, file differences, build-output heuristics, static review
-signals, provenance availability, and a transparent heuristic risk score.
+## API
 
-Source retrieval currently supports GitHub repositories with an npm `gitHead`
-or a matching version tag. Provenance signatures are not cryptographically
-verified, security signals require manual review, and risk scores are not a
-verdict of malicious intent. Scan history is stored in SQLite at
-`backend/data/scans.sqlite3`; set `KILLCHAIN_DB_PATH` to use another location.
+The backend currently exposes a minimal API (in active development):
+
+- `GET /` — health check
+- `GET /items/{item_id}` — placeholder endpoint
+
+## CI/CD
+
+GitHub Actions workflows handle testing and deployment. The backend deploys to [Render](https://render.com) via deploy hooks, configured in `render.yaml` (Python 3.11.9, free tier, auto-deploy disabled in favor of Actions-controlled deploys). The frontend deploys to [Vercel](https://vercel.com).
+
+## Team
+
+**SoloLeveling**
+
+1. [Darsh Rustagi](mailto:darsh.r25558@nst.rishihood.edu.in)
+2. [Moksh Bansal](mailto:moksh.b25279@nst.rishihood.edu.in)
+3. [Mudit Jindal](mailto:mudit.j25284@nst.rishihood.edu.in)
+
+## License
+
+See [LICENSE](LICENSE).
