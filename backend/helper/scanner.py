@@ -31,6 +31,7 @@ REGISTRY_HOST = "registry.npmjs.org"
 GITHUB_API_HOST = "api.github.com"
 GITHUB_ARCHIVE_HOST = "codeload.github.com"
 GITHUB_RAW_HOST = "raw.githubusercontent.com"
+OSV_API_HOST = "api.osv.dev"
 MAX_ARCHIVE_BYTES = 100 * 1024 * 1024
 MAX_EXTRACTED_BYTES = 300 * 1024 * 1024
 MAX_FILE_BYTES = 25 * 1024 * 1024
@@ -40,6 +41,11 @@ MAX_ATTESTATION_BYTES = 10 * 1024 * 1024
 MAX_REPOSITORY_MANIFESTS = 100
 MAX_PACKAGE_JSON_BYTES = 1024 * 1024
 MAX_REPOSITORY_MANIFEST_BYTES = 10 * 1024 * 1024
+MAX_REPOSITORY_LOCKFILES = 20
+MAX_REPOSITORY_LOCKFILE_BYTES = 20 * 1024 * 1024
+MAX_SCANNED_DEPENDENCIES = 20_000
+OSV_BATCH_SIZE = 100
+MAX_OSV_ADVISORIES = 500
 MAX_TEXT_DIFF_BYTES = 64 * 1024
 MAX_DIFF_LINES = 120
 SLSA_PROVENANCE_V1 = "https://slsa.dev/provenance/v1"
@@ -147,7 +153,16 @@ def _fetch_json(
 def _registry_metadata(package_name: str) -> Dict[str, Any]:
     package_path = quote(package_name, safe="")
     url = f"https://{REGISTRY_HOST}/{package_path}"
-    return _fetch_json(url, (REGISTRY_HOST,))
+    try:
+        return _fetch_json(url, (REGISTRY_HOST,))
+    except ScanError as exc:
+        if exc.status_code == 404:
+            raise ScanError(
+                f"npm package '{package_name}' was not found. Repository scans require "
+                "a package with a published npm version.",
+                status_code=404,
+            ) from exc
+        raise
 
 
 def _github_api_headers() -> Dict[str, str]:
@@ -213,13 +228,15 @@ def _fetch_github_json(url: str) -> Any:
         raise ScanError("GitHub returned invalid repository metadata.") from exc
 
 
-def _read_github_raw_file(url: str) -> str:
+def _read_github_raw_file(
+    url: str, max_bytes: int = MAX_PACKAGE_JSON_BYTES
+) -> str:
     response = _open_response(url, (GITHUB_RAW_HOST,))
     if response.status_code != 200:
         status = response.status_code
         response.close()
-        raise ScanError(f"Unable to read a package.json from the selected repository (HTTP {status}).")
-    body = _read_limited_response(response, MAX_PACKAGE_JSON_BYTES)
+        raise ScanError(f"Unable to read a file from the selected repository (HTTP {status}).")
+    body = _read_limited_response(response, max_bytes)
     try:
         return body.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -306,7 +323,17 @@ def inspect_public_repository(repository_url: str) -> Dict[str, Any]:
         and isinstance(item.get("path"), str)
         and PurePosixPath(item["path"]).name == "package.json"
     ]
+    lockfile_entries = [
+        item
+        for item in tree["tree"]
+        if isinstance(item, dict)
+        and item.get("type") == "blob"
+        and isinstance(item.get("path"), str)
+        and PurePosixPath(item["path"]).name
+        in ("package-lock.json", "npm-shrinkwrap.json")
+    ]
     manifest_paths = sorted(item["path"] for item in manifest_entries)
+    lockfile_paths = sorted(item["path"] for item in lockfile_entries)
     if len(manifest_paths) > MAX_REPOSITORY_MANIFESTS:
         raise ScanError(
             f"Found more than {MAX_REPOSITORY_MANIFESTS} package.json files; "
@@ -319,6 +346,19 @@ def inspect_public_repository(repository_url: str) -> Dict[str, Any]:
     ) > MAX_REPOSITORY_MANIFEST_BYTES:
         raise ScanError(
             "The discovered package manifests exceed the combined inspection size limit."
+        )
+    if len(lockfile_paths) > MAX_REPOSITORY_LOCKFILES:
+        raise ScanError(
+            f"Found more than {MAX_REPOSITORY_LOCKFILES} npm lockfiles; "
+            "refusing to perform an incomplete dependency audit."
+        )
+    if sum(
+        item.get("size", 0)
+        for item in lockfile_entries
+        if isinstance(item.get("size"), int) and item["size"] > 0
+    ) > MAX_REPOSITORY_LOCKFILE_BYTES:
+        raise ScanError(
+            "The discovered npm lockfiles exceed the combined dependency audit size limit."
         )
 
     manifests = []
@@ -366,6 +406,8 @@ def inspect_public_repository(repository_url: str) -> Dict[str, Any]:
         scripts = manifest.get("scripts")
         dependencies = manifest.get("dependencies")
         dev_dependencies = manifest.get("devDependencies")
+        optional_dependencies = manifest.get("optionalDependencies")
+        peer_dependencies = manifest.get("peerDependencies")
         manifests.append(
             {
                 "path": path,
@@ -375,6 +417,7 @@ def inspect_public_repository(repository_url: str) -> Dict[str, Any]:
                 "valid": valid_identity,
                 "name": manifest_name.strip() if isinstance(manifest_name, str) else None,
                 "version": manifest_version.strip() if isinstance(manifest_version, str) else None,
+                "private": manifest.get("private") is True,
                 "repository": manifest.get("repository"),
                 "main": manifest.get("main"),
                 "module": manifest.get("module"),
@@ -385,6 +428,12 @@ def inspect_public_repository(repository_url: str) -> Dict[str, Any]:
                 "dependencies": dependencies if isinstance(dependencies, dict) else {},
                 "devDependencies": dev_dependencies
                 if isinstance(dev_dependencies, dict)
+                else {},
+                "optionalDependencies": optional_dependencies
+                if isinstance(optional_dependencies, dict)
+                else {},
+                "peerDependencies": peer_dependencies
+                if isinstance(peer_dependencies, dict)
                 else {},
                 "workspaces": manifest.get("workspaces"),
                 "content": raw_manifest,
@@ -443,7 +492,562 @@ def inspect_public_repository(repository_url: str) -> Dict[str, Any]:
         "tagsComplete": len(tags) < 100,
         "releasesComplete": len(releases) < 100,
         "manifests": manifests,
+        "lockfiles": lockfile_paths,
         "listingComplete": True,
+    }
+
+
+def _is_exact_npm_version(version: str) -> bool:
+    return re.fullmatch(
+        r"v?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+        r"(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?",
+        version,
+    ) is not None
+
+
+def _npm_name_from_lock_path(path: str) -> Optional[str]:
+    parts = PurePosixPath(path).parts
+    node_modules_indexes = [
+        index for index, part in enumerate(parts) if part == "node_modules"
+    ]
+    if not node_modules_indexes:
+        return None
+    index = node_modules_indexes[-1] + 1
+    if index >= len(parts):
+        return None
+    name = parts[index]
+    if name.startswith("@"):
+        if index + 1 >= len(parts):
+            return None
+        name = f"{name}/{parts[index + 1]}"
+    if not re.fullmatch(r"(?:@[a-z0-9._~-]+/)?[a-z0-9][a-z0-9._~-]*", name):
+        return None
+    return name
+
+
+def _build_dependency_inventory(
+    inspection: Dict[str, Any], lockfile_contents: Dict[str, Dict[str, Any]]
+) -> Tuple[List[Dict[str, Any]], int]:
+    manifests = inspection.get("manifests", [])
+    direct: Dict[str, Dict[str, Any]] = {}
+    workspace_names = {
+        manifest["name"]
+        for manifest in manifests
+        if isinstance(manifest, dict) and isinstance(manifest.get("name"), str)
+    }
+    local_dependencies = 0
+    for manifest in manifests:
+        if not isinstance(manifest, dict):
+            continue
+        manifest_path = manifest.get("path")
+        for dependency_type in (
+            "dependencies",
+            "devDependencies",
+            "optionalDependencies",
+            "peerDependencies",
+        ):
+            declarations = manifest.get(dependency_type, {})
+            if not isinstance(declarations, dict):
+                continue
+            for name, spec in declarations.items():
+                if not isinstance(name, str) or not isinstance(spec, str):
+                    continue
+                if name in workspace_names or spec.startswith(("workspace:", "file:", "link:")):
+                    local_dependencies += 1
+                    continue
+                if not re.fullmatch(
+                    r"(?:@[a-z0-9._~-]+/)?[a-z0-9][a-z0-9._~-]*", name
+                ):
+                    continue
+                item = direct.setdefault(
+                    name,
+                    {
+                        "specifications": set(),
+                        "dependencyTypes": set(),
+                        "manifests": set(),
+                        "installPaths": set(),
+                    },
+                )
+                item["specifications"].add(spec)
+                item["dependencyTypes"].add(dependency_type)
+                if isinstance(manifest_path, str):
+                    item["manifests"].add(manifest_path)
+                    directory = PurePosixPath(manifest_path).parent
+                    directory_parts = () if directory.as_posix() == "." else directory.parts
+                    package_parts = tuple(name.split("/"))
+                    for depth in range(len(directory_parts) + 1):
+                        item["installPaths"].add(
+                            PurePosixPath(
+                                *directory_parts[:depth],
+                                "node_modules",
+                                *package_parts,
+                            ).as_posix()
+                        )
+
+    dependencies: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+    def add_dependency(
+        name: str,
+        version: Optional[str],
+        lockfile_path: Optional[str],
+        install_path: Optional[str],
+        is_development: bool = False,
+    ) -> None:
+        if not version or not _is_exact_npm_version(version):
+            return
+        declared_direct = direct.get(name)
+        direct_info = (
+            declared_direct
+            if declared_direct
+            and (
+                install_path is None
+                or install_path in declared_direct["installPaths"]
+            )
+            else None
+        )
+        key = (name, version)
+        item = dependencies.setdefault(
+            key,
+            {
+                "name": name,
+                "version": version,
+                "direct": direct_info is not None,
+                "development": is_development
+                or bool(
+                    direct_info
+                    and "devDependencies" in direct_info["dependencyTypes"]
+                ),
+                "dependencyTypes": set(
+                    direct_info["dependencyTypes"] if direct_info else ()
+                ),
+                "manifests": set(direct_info["manifests"] if direct_info else ()),
+                "lockfilePaths": set(),
+                "installPaths": set(),
+                "vulnerabilities": [],
+            },
+        )
+        item["direct"] = item["direct"] or direct_info is not None
+        item["development"] = item["development"] or is_development
+        if direct_info:
+            item["dependencyTypes"].update(direct_info["dependencyTypes"])
+            item["manifests"].update(direct_info["manifests"])
+        if lockfile_path:
+            item["lockfilePaths"].add(lockfile_path)
+        if install_path:
+            item["installPaths"].add(install_path)
+
+    supported_lockfiles = sorted(lockfile_contents)
+    for lockfile_path in supported_lockfiles:
+        lockfile = lockfile_contents[lockfile_path]
+        packages = lockfile.get("packages")
+        if isinstance(packages, dict):
+            for install_path, package in packages.items():
+                if not isinstance(install_path, str) or not install_path:
+                    continue
+                if not isinstance(package, dict) or package.get("link") is True:
+                    continue
+                path_name = _npm_name_from_lock_path(install_path)
+                package_name = package.get("name")
+                name = (
+                    package_name
+                    if isinstance(package_name, str)
+                    and re.fullmatch(
+                        r"(?:@[a-z0-9._~-]+/)?[a-z0-9][a-z0-9._~-]*",
+                        package_name,
+                    )
+                    else path_name
+                )
+                version = package.get("version")
+                if name and isinstance(version, str):
+                    add_dependency(
+                        name,
+                        version,
+                        lockfile_path,
+                        install_path,
+                        package.get("dev") is True,
+                    )
+            continue
+
+        def walk_legacy_dependencies(
+            entries: Any, parent_path: str = "node_modules"
+        ) -> None:
+            if not isinstance(entries, dict):
+                return
+            for name, package in entries.items():
+                if not isinstance(name, str) or not isinstance(package, dict):
+                    continue
+                install_path = f"{parent_path}/{name}"
+                version = package.get("version")
+                if isinstance(version, str):
+                    add_dependency(
+                        name,
+                        version,
+                        lockfile_path,
+                        install_path,
+                        package.get("dev") is True,
+                    )
+                walk_legacy_dependencies(
+                    package.get("dependencies"), f"{install_path}/node_modules"
+                )
+
+        walk_legacy_dependencies(lockfile.get("dependencies"))
+
+    for name, info in direct.items():
+        if any(
+            dependency.get("name") == name and dependency.get("direct")
+            for dependency in dependencies.values()
+        ):
+            continue
+        specs = sorted(info["specifications"])
+        version = specs[0] if len(specs) == 1 and _is_exact_npm_version(specs[0]) else None
+        key = (name, version or "")
+        dependencies[key] = {
+            "name": name,
+            "version": version,
+            "versionSpec": specs,
+            "direct": True,
+            "development": "devDependencies" in info["dependencyTypes"],
+            "dependencyTypes": set(info["dependencyTypes"]),
+            "manifests": set(info["manifests"]),
+            "lockfilePaths": set(),
+            "installPaths": set(),
+            "vulnerabilities": [],
+        }
+
+    if len(dependencies) > MAX_SCANNED_DEPENDENCIES:
+        raise ScanError(
+            f"The dependency inventory exceeds the {MAX_SCANNED_DEPENDENCIES} package limit."
+        )
+    serialized = []
+    for item in dependencies.values():
+        serialized.append(
+            {
+                **item,
+                "dependencyTypes": sorted(item["dependencyTypes"])
+                or (["transitive"] if not item["direct"] else []),
+                "manifests": sorted(item["manifests"]),
+                "lockfilePaths": sorted(item["lockfilePaths"]),
+                "installPaths": sorted(item["installPaths"]),
+                "resolved": isinstance(item["version"], str),
+            }
+        )
+    serialized.sort(key=lambda item: (item["name"].casefold(), item["version"] or ""))
+    return serialized, local_dependencies
+
+
+def _post_osv_json(payload: Dict[str, Any]) -> Dict[str, Any]:
+    url = f"https://{OSV_API_HOST}/v1/querybatch"
+    _validate_url(url, (OSV_API_HOST,))
+    try:
+        response = requests.post(
+            url,
+            json=payload,
+            headers={"Accept": "application/json"},
+            timeout=(10, 45),
+            allow_redirects=False,
+        )
+    except requests.RequestException as exc:
+        raise ScanError(f"Unable to query the OSV vulnerability database: {exc}") from exc
+    if response.status_code != 200:
+        status = response.status_code
+        response.close()
+        raise ScanError(
+            f"The OSV vulnerability database request failed with HTTP {status}."
+        )
+    body = _read_limited_response(response, MAX_METADATA_BYTES)
+    try:
+        data = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+        raise ScanError("OSV returned invalid vulnerability data.") from exc
+    if not isinstance(data, dict):
+        raise ScanError("OSV returned an unexpected vulnerability response.")
+    return data
+
+
+def _osv_severity(vulnerability: Dict[str, Any]) -> str:
+    for source in ("database_specific", "ecosystem_specific"):
+        details = vulnerability.get(source)
+        severity = details.get("severity") if isinstance(details, dict) else None
+        if isinstance(severity, str):
+            normalized = severity.upper()
+            return "MEDIUM" if normalized == "MODERATE" else normalized
+    return "UNKNOWN"
+
+
+def _fetch_osv_vulnerability(identifier: str) -> Dict[str, Any]:
+    if not re.fullmatch(r"[A-Za-z0-9._:-]{1,200}", identifier):
+        raise ScanError("OSV returned a vulnerability with an invalid identifier.")
+    url = f"https://{OSV_API_HOST}/v1/vulns/{quote(identifier, safe='')}"
+    response = _open_response(url, (OSV_API_HOST,), {"Accept": "application/json"})
+    if response.status_code != 200:
+        status = response.status_code
+        response.close()
+        raise ScanError(
+            f"OSV advisory details for {identifier} could not be retrieved (HTTP {status})."
+        )
+    body = _read_limited_response(response, MAX_METADATA_BYTES)
+    try:
+        data = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+        raise ScanError(f"OSV returned invalid details for advisory {identifier}.") from exc
+    if not isinstance(data, dict) or data.get("id") != identifier:
+        raise ScanError(f"OSV returned mismatched details for advisory {identifier}.")
+    return data
+
+
+def _query_osv_dependencies(
+    dependencies: List[Dict[str, Any]],
+) -> int:
+    resolved = [
+        dependency
+        for dependency in dependencies
+        if isinstance(dependency.get("version"), str)
+    ]
+    distinct: Dict[Tuple[str, str], Dict[str, Any]] = {
+        (dependency["name"], dependency["version"]): dependency
+        for dependency in resolved
+    }
+    queries = list(distinct.values())
+    matched_advisories: Dict[str, List[Dict[str, Any]]] = {}
+    for start in range(0, len(queries), OSV_BATCH_SIZE):
+        batch = queries[start : start + OSV_BATCH_SIZE]
+        response = _post_osv_json(
+            {
+                "queries": [
+                    {
+                        "package": {
+                            "ecosystem": "npm",
+                            "name": dependency["name"],
+                        },
+                        "version": dependency["version"].removeprefix("v"),
+                    }
+                    for dependency in batch
+                ]
+            }
+        )
+        results = response.get("results")
+        if not isinstance(results, list) or len(results) != len(batch):
+            raise ScanError("OSV returned a mismatched vulnerability result count.")
+        for dependency, result in zip(batch, results):
+            if not isinstance(result, dict):
+                raise ScanError("OSV returned a malformed vulnerability result.")
+            vulnerabilities = result.get("vulns") or []
+            if not isinstance(vulnerabilities, list):
+                raise ScanError("OSV returned malformed vulnerability records.")
+            for vulnerability in vulnerabilities:
+                if not isinstance(vulnerability, dict) or not isinstance(
+                    vulnerability.get("id"), str
+                ):
+                    raise ScanError("OSV returned a vulnerability without a valid ID.")
+                matched_advisories.setdefault(vulnerability["id"], []).append(dependency)
+                if len(matched_advisories) > MAX_OSV_ADVISORIES:
+                    raise ScanError(
+                        f"OSV returned more than {MAX_OSV_ADVISORIES} distinct advisories; "
+                        "refusing to make an incomplete dependency risk assessment."
+                    )
+
+    for identifier, affected_dependencies in matched_advisories.items():
+        vulnerability = _fetch_osv_vulnerability(identifier)
+        aliases = vulnerability.get("aliases")
+        normalized = {
+            "id": identifier,
+            "aliases": aliases if isinstance(aliases, list) else [],
+            "summary": vulnerability.get("summary")
+            or "No advisory summary was supplied.",
+            "severity": _osv_severity(vulnerability),
+            "published": vulnerability.get("published"),
+            "modified": vulnerability.get("modified"),
+            "url": f"https://osv.dev/vulnerability/{quote(identifier, safe='')}",
+        }
+        for dependency in affected_dependencies:
+            dependency["vulnerabilities"].append(normalized)
+    return len(queries)
+
+
+def _dependency_risk(
+    dependencies: List[Dict[str, Any]],
+    unresolved_count: int,
+    lockfile_available: bool = True,
+) -> Dict[str, Any]:
+    points = {"CRITICAL": 35, "HIGH": 25, "MEDIUM": 15, "LOW": 5, "UNKNOWN": 10}
+    unique_advisories: Dict[str, str] = {}
+    affected_dependencies = 0
+    for dependency in dependencies:
+        vulnerabilities = dependency.get("vulnerabilities", [])
+        if vulnerabilities:
+            affected_dependencies += 1
+        for vulnerability in vulnerabilities:
+            aliases = vulnerability.get("aliases", [])
+            if not isinstance(aliases, list):
+                aliases = []
+            related_ids = {
+                identifier.casefold()
+                for identifier in [vulnerability["id"], *aliases]
+                if isinstance(identifier, str) and identifier
+            }
+            identifier = min(related_ids) if related_ids else vulnerability["id"]
+            severity = vulnerability["severity"]
+            previous = unique_advisories.get(identifier, "LOW")
+            if points.get(severity, points["UNKNOWN"]) > points.get(
+                previous, points["UNKNOWN"]
+            ):
+                unique_advisories[identifier] = severity
+
+    score = min(
+        80,
+        sum(points.get(severity, points["UNKNOWN"]) for severity in unique_advisories.values()),
+    )
+    notes = []
+    if unique_advisories:
+        notes.append(
+            f"{len(unique_advisories)} unique OSV advisory/advisories affect "
+            f"{affected_dependencies} resolved dependency entries."
+        )
+    else:
+        notes.append(
+            f"OSV reported no known advisories for {sum(bool(item.get('version')) for item in dependencies)} "
+            "exact dependency versions; this does not prove the packages are safe."
+        )
+    if not lockfile_available:
+        score += 25
+        notes.append(
+            "No supported npm lockfile was found; transitive dependencies could not be enumerated (+25)."
+        )
+    if unresolved_count:
+        uncertainty_points = min(30, 10 + unresolved_count * 2)
+        score += uncertainty_points
+        notes.append(
+            f"{unresolved_count} declared dependencies could not be resolved to exact versions "
+            f"and were not checked against OSV (+{uncertainty_points})."
+        )
+    score = min(100, score)
+    level = "SAFE" if score < 25 else "WARN" if score < 60 else "CRITICAL"
+    notes.append(
+        "Risk model killchain-dependency-risk-v1 groups advisory IDs by aliases and caps "
+        "advisory points at 80; severity points are CRITICAL 35, HIGH 25, MEDIUM 15, LOW 5, UNKNOWN 10."
+    )
+    return {
+        "score": score,
+        "level": level,
+        "notes": notes,
+        "model": "killchain-dependency-risk-v1",
+    }
+
+
+def run_repository_dependency_scan(repository_url: str) -> Dict[str, Any]:
+    inspection = inspect_public_repository(repository_url)
+    normalized_url, (owner, repository_name) = _normalize_public_github_url(
+        repository_url
+    )
+    commit = inspection["repository"]["defaultBranchCommit"]
+    lockfile_paths = inspection.get("lockfiles", [])
+    lockfile_contents: Dict[str, Dict[str, Any]] = {}
+    total_lockfile_bytes = 0
+    for path in lockfile_paths:
+        lockfile_parts = _safe_member_parts(path)
+        encoded_path = "/".join(
+            quote(part, safe="") for part in lockfile_parts
+        )
+        contents = _read_github_raw_file(
+            f"https://{GITHUB_RAW_HOST}/{quote(owner, safe='')}/"
+            f"{quote(repository_name, safe='')}/{quote(commit, safe='')}/{encoded_path}",
+            max_bytes=MAX_REPOSITORY_LOCKFILE_BYTES,
+        )
+        total_lockfile_bytes += len(contents.encode("utf-8"))
+        if total_lockfile_bytes > MAX_REPOSITORY_LOCKFILE_BYTES:
+            raise ScanError(
+                "The downloaded npm lockfiles exceed the combined dependency audit size limit."
+            )
+        try:
+            lockfile = json.loads(contents)
+        except (json.JSONDecodeError, RecursionError) as exc:
+            raise ScanError(f"The npm lockfile '{path}' contains invalid JSON.") from exc
+        if not isinstance(lockfile, dict):
+            raise ScanError(f"The npm lockfile '{path}' has an unexpected format.")
+        lockfile_contents[path] = lockfile
+
+    dependencies, local_dependencies = _build_dependency_inventory(
+        inspection, lockfile_contents
+    )
+    if not dependencies:
+        raise ScanError(
+            "No external npm dependencies were found in this repository.",
+            status_code=422,
+        )
+    unresolved_count = sum(not item["resolved"] for item in dependencies)
+    queried_count = _query_osv_dependencies(dependencies)
+    risk = _dependency_risk(
+        dependencies, unresolved_count, lockfile_available=bool(lockfile_paths)
+    )
+    vulnerability_count = sum(
+        len(item["vulnerabilities"]) for item in dependencies
+    )
+    direct_count = sum(item["direct"] for item in dependencies)
+    transitive_count = sum(not item["direct"] for item in dependencies)
+    repository = inspection["repository"]
+    scan_id = str(uuid.uuid4())
+    timestamp = datetime.now(timezone.utc).isoformat()
+    repo_name = repository.get("name") or normalized_url
+    revision = f"{repository['defaultBranch']}@{commit[:12]}"
+    summary = (
+        f"Audited {len(dependencies)} dependency versions from "
+        f"{len(inspection.get('manifests', []))} package manifest(s). "
+        f"OSV reported {vulnerability_count} advisory match(es); "
+        f"{unresolved_count} dependency entries had no exact version."
+    )
+    return {
+        "id": scan_id,
+        "timestamp": timestamp,
+        "scanType": "repository-dependencies",
+        "pkg": {"name": repo_name, "version": revision},
+        "risk": risk,
+        "aiExplanation": {
+            "summary": summary,
+            "points": [
+                f"Repository snapshot: {commit}.",
+                f"OSV queries completed for {queried_count} unique exact npm package versions.",
+                f"{local_dependencies} local/workspace dependency reference(s) were excluded from third-party advisory checks.",
+                "Only advisory evidence and lockfile/package manifest metadata were analyzed; package code was not executed.",
+            ],
+            "recommendation": (
+                "Review each OSV advisory and update or remove affected dependencies. "
+                "Resolve unpinned dependencies and rerun the audit."
+                if vulnerability_count or unresolved_count
+                else "No known OSV advisories matched the resolved versions; continue routine dependency review."
+            ),
+        },
+        "dependencyAudit": {
+            "repository": {
+                "url": repository["canonicalUrl"],
+                "name": repo_name,
+                "branch": repository["defaultBranch"],
+                "commit": commit,
+            },
+            "lockfiles": lockfile_paths,
+            "manifests": [
+                {
+                    "path": item["path"],
+                    "name": item.get("name"),
+                    "version": item.get("version"),
+                }
+                for item in inspection.get("manifests", [])
+                if isinstance(item, dict)
+            ],
+            "summary": {
+                "dependencies": len(dependencies),
+                "direct": direct_count,
+                "transitive": transitive_count,
+                "queried": queried_count,
+                "unresolved": unresolved_count,
+                "vulnerabilities": vulnerability_count,
+                "affectedDependencies": sum(
+                    bool(item["vulnerabilities"]) for item in dependencies
+                ),
+                "localDependenciesExcluded": local_dependencies,
+            },
+            "advisorySource": "OSV",
+            "dependencies": dependencies,
+        },
     }
 
 

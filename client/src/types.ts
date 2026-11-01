@@ -18,10 +18,22 @@ export interface SecurityItem {
   description?: string;
   confidence?: string;
 }
+export interface RiskAssessment {
+  score: number;
+  level: 'SAFE' | 'WARN' | 'CRITICAL';
+  notes: string[];
+  model?: string;
+}
+export interface ScanExplanation {
+  summary: string;
+  points: string[];
+  recommendation: string;
+}
 
-export interface ScanResult {
+export interface PackageScanResult {
   id: string;
   timestamp: string;
+  scanType?: 'package-integrity';
 
   pkg: {
     name: string;
@@ -51,11 +63,8 @@ export interface ScanResult {
   manifest: ManifestItem[];
   publishedManifest?: FileManifestData;
   sourceManifest?: FileManifestData;
-
   diff: DiffItem[];
-
   artifacts: ArtifactItem[];
-
   security: SecurityItem[];
 
   provenance: {
@@ -77,7 +86,63 @@ export interface ScanResult {
     workflow?: string | null;
   };
 
-  risk: { score: number; level: 'SAFE' | 'WARN' | 'CRITICAL'; notes: string[] };
-
-  aiExplanation: { summary: string; points: string[]; recommendation: string };
+  risk: RiskAssessment;
+  aiExplanation: ScanExplanation;
 }
+
+export interface DependencyAuditVulnerability {
+  id: string;
+  aliases: string[];
+  summary: string;
+  severity: string;
+  published?: string;
+  modified?: string;
+  url: string;
+}
+
+export interface AuditedDependency {
+  name: string;
+  version: string | null;
+  versionSpec?: string[];
+  direct: boolean;
+  development: boolean;
+  dependencyTypes: string[];
+  manifests: string[];
+  lockfilePaths: string[];
+  installPaths: string[];
+  resolved: boolean;
+  vulnerabilities: DependencyAuditVulnerability[];
+}
+
+export interface RepositoryDependencyScanResult {
+  id: string;
+  timestamp: string;
+  scanType: 'repository-dependencies';
+  pkg: { name: string; version: string };
+  risk: RiskAssessment;
+  aiExplanation: ScanExplanation;
+  dependencyAudit: {
+    repository: {
+      url: string;
+      name: string;
+      branch: string;
+      commit: string;
+    };
+    lockfiles: string[];
+    manifests: Array<{ path: string; name?: string | null; version?: string | null }>;
+    summary: {
+      dependencies: number;
+      direct: number;
+      transitive: number;
+      queried: number;
+      unresolved: number;
+      vulnerabilities: number;
+      affectedDependencies: number;
+      localDependenciesExcluded: number;
+    };
+    advisorySource: string;
+    dependencies: AuditedDependency[];
+  };
+}
+
+export type ScanResult = PackageScanResult | RepositoryDependencyScanResult;

@@ -1,11 +1,11 @@
 import { GitBranch, ExternalLink } from 'lucide-react';
-import type { ScanResult } from '../types';
+import type { PackageScanResult } from '../types';
 import { Card } from './ui/Card';
 import { DataRow } from './ui/DataRow';
 import { CodeBlock } from './ui/CodeBlock';
 import { Badge } from './ui/Badge';
 
-export function SourceRepoInfo({ data }: { data: ScanResult['source'] }) {
+export function SourceRepoInfo({ data }: { data: PackageScanResult['source'] }) {
   const associationLabel = data.match
     ? 'NPM GITHEAD'
     : data.association === 'user-selected'

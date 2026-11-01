@@ -12,6 +12,7 @@ import { SecurityFindings } from '../components/SecurityFindings';
 import { ProvenanceCheck } from '../components/ProvenanceCheck';
 import { RiskScore } from '../components/RiskScore';
 import { AIExplanation } from '../components/AIExplanation';
+import { DependencyAudit } from '../components/DependencyAudit';
 import { Skeleton } from '../components/ui/Skeleton';
 import { CodeBlock } from '../components/ui/CodeBlock';
 
@@ -85,6 +86,41 @@ export function ResultsPage({ scanId, onBack }: { scanId: string; onBack: () => 
   }
 
   if (!result) return null;
+
+  if (result.scanType === 'repository-dependencies') {
+    return (
+      <div>
+        <div className="results-header">
+          <div>
+            <h2 className="results-pkg-title">{result.dependencyAudit.repository.name}</h2>
+            <div className="results-meta">
+              <span className="brand-tag">
+                <Tag size={11} style={{ marginRight: 4 }} />
+                <CodeBlock copyable={false}>{result.id}</CodeBlock>
+              </span>
+              <span className="results-timestamp">
+                <Clock size={12} style={{ display: 'inline', marginRight: 4, verticalAlign: -1 }} />
+                Scanned {result.timestamp}
+              </span>
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 10 }}>
+            <button className="btn-secondary" onClick={onBack}>
+              <ArrowLeft size={14} />
+              <span>Scanner</span>
+            </button>
+            <button className="btn-primary" onClick={onBack}>
+              <Plus size={14} />
+              <span>New Scan</span>
+            </button>
+          </div>
+        </div>
+        <RiskScore data={result.risk} />
+        <AIExplanation data={result.aiExplanation} />
+        <DependencyAudit data={result.dependencyAudit} />
+      </div>
+    );
+  }
 
   return (
     <div>
