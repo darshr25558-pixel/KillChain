@@ -17,6 +17,7 @@ from sigstore.errors import VerificationError
 from helper.scanner import (
     ScanError,
     _build_analysis,
+    _build_dependency_inventory,
     _build_manifest,
     _compare_manifests,
     _extract_tar,
@@ -24,10 +25,14 @@ from helper.scanner import (
     _fetch_github_json,
     _github_api_headers,
     _normalize_public_github_url,
+    _dependency_risk,
+    _query_osv_dependencies,
+    _registry_metadata,
     _resolve_repository_revision,
     _resolve_source,
     _safe_member_parts,
     inspect_public_repository,
+    run_repository_dependency_scan,
     run_scan,
     _verify_npm_provenance,
 )
@@ -165,6 +170,177 @@ class ComparisonTests(unittest.TestCase):
 
 
 class RepositoryTests(unittest.TestCase):
+    def test_dependency_inventory_resolves_direct_dev_and_transitive_packages(self):
+        inspection = {
+            "manifests": [
+                {
+                    "path": "package.json",
+                    "name": "app",
+                    "dependencies": {"react": "^19.0.0"},
+                    "devDependencies": {"typescript": "^5.0.0"},
+                }
+            ]
+        }
+        lockfiles = {
+            "package-lock.json": {
+                "lockfileVersion": 3,
+                "packages": {
+                    "": {
+                        "dependencies": {"react": "^19.0.0"},
+                        "devDependencies": {"typescript": "^5.0.0"},
+                    },
+                    "node_modules/react": {"version": "19.1.0"},
+                    "node_modules/other/node_modules/react": {"version": "18.3.1"},
+                    "node_modules/scheduler": {"version": "0.26.0"},
+                    "node_modules/typescript": {"version": "5.9.2", "dev": True},
+                },
+            }
+        }
+
+        dependencies, local_count = _build_dependency_inventory(inspection, lockfiles)
+        by_name_version = {
+            (item["name"], item["version"]): item for item in dependencies
+        }
+
+        self.assertEqual(local_count, 0)
+        self.assertEqual(len(dependencies), 4)
+        self.assertTrue(by_name_version[("react", "19.1.0")]["direct"])
+        self.assertFalse(by_name_version[("react", "18.3.1")]["direct"])
+        self.assertTrue(by_name_version[("typescript", "5.9.2")]["direct"])
+        self.assertTrue(by_name_version[("typescript", "5.9.2")]["development"])
+        self.assertFalse(by_name_version[("scheduler", "0.26.0")]["direct"])
+        self.assertEqual(
+            by_name_version[("scheduler", "0.26.0")]["dependencyTypes"],
+            ["transitive"],
+        )
+
+    def test_unlocked_dependency_ranges_are_reported_unresolved(self):
+        dependencies, _ = _build_dependency_inventory(
+            {
+                "manifests": [
+                    {
+                        "path": "package.json",
+                        "dependencies": {"react": "^19.0.0"},
+                    }
+                ]
+            },
+            {},
+        )
+
+        self.assertEqual(len(dependencies), 1)
+        self.assertIsNone(dependencies[0]["version"])
+        self.assertFalse(dependencies[0]["resolved"])
+        self.assertEqual(dependencies[0]["versionSpec"], ["^19.0.0"])
+
+    def test_dependency_risk_warns_when_no_lockfile_covers_transitive_dependencies(self):
+        risk = _dependency_risk(
+            [{"name": "react", "version": "19.0.0", "vulnerabilities": []}],
+            unresolved_count=0,
+            lockfile_available=False,
+        )
+
+        self.assertEqual(risk["score"], 25)
+        self.assertEqual(risk["level"], "WARN")
+        self.assertTrue(any("transitive dependencies could not be enumerated" in note for note in risk["notes"]))
+
+    def test_osv_matches_are_attached_and_risk_does_not_double_count_advisory_ids(self):
+        dependencies = [
+            {"name": "left-pad", "version": "1.3.0", "vulnerabilities": []},
+            {"name": "left-pad", "version": "1.2.0", "vulnerabilities": []},
+        ]
+        with patch(
+            "helper.scanner._post_osv_json",
+            return_value={
+                "results": [
+                    {"vulns": [{"id": "GHSA-test-1234"}]},
+                    {"vulns": [{"id": "GHSA-test-1234"}]},
+                ]
+            },
+        ) as query, patch(
+            "helper.scanner._fetch_osv_vulnerability",
+            return_value={
+                "id": "GHSA-test-1234",
+                "aliases": ["CVE-2026-1234"],
+                "summary": "Test advisory",
+                "database_specific": {"severity": "HIGH"},
+            },
+        ) as fetch_details:
+            queried = _query_osv_dependencies(dependencies)
+
+        self.assertEqual(queried, 2)
+        query.assert_called_once()
+        fetch_details.assert_called_once_with("GHSA-test-1234")
+        self.assertEqual(len(dependencies[0]["vulnerabilities"]), 1)
+        self.assertEqual(dependencies[0]["vulnerabilities"][0]["severity"], "HIGH")
+        dependencies[1]["vulnerabilities"].append(
+            {
+                "id": "CVE-2026-1234",
+                "aliases": ["GHSA-test-1234"],
+                "severity": "HIGH",
+            }
+        )
+        risk = _dependency_risk(dependencies, unresolved_count=0)
+        self.assertEqual(risk["score"], 25)
+        self.assertEqual(risk["level"], "WARN")
+
+    def test_repository_dependency_scan_saves_a_default_branch_osv_report(self):
+        inspection = {
+            "repository": {
+                "url": "https://github.com/owner/repo",
+                "canonicalUrl": "https://github.com/owner/repo",
+                "name": "owner/repo",
+                "defaultBranch": "main",
+                "defaultBranchCommit": "a" * 40,
+            },
+            "manifests": [
+                {
+                    "path": "package.json",
+                    "name": "private-app",
+                    "version": "1.0.0",
+                    "dependencies": {"react": "^19.0.0"},
+                    "devDependencies": {},
+                }
+            ],
+            "lockfiles": ["package-lock.json"],
+        }
+        lockfile = {
+            "lockfileVersion": 3,
+            "packages": {"node_modules/react": {"version": "19.1.0"}},
+        }
+        with (
+            patch("helper.scanner.inspect_public_repository", return_value=inspection),
+            patch(
+                "helper.scanner._read_github_raw_file",
+                return_value=json.dumps(lockfile),
+            ),
+            patch(
+                "helper.scanner._post_osv_json",
+                return_value={"results": [{"vulns": []}]},
+            ) as osv_query,
+        ):
+            result = run_repository_dependency_scan("https://github.com/owner/repo")
+
+        self.assertEqual(result["scanType"], "repository-dependencies")
+        self.assertEqual(result["pkg"]["name"], "owner/repo")
+        self.assertEqual(result["pkg"]["version"], f"main@{'a' * 12}")
+        self.assertEqual(result["risk"]["level"], "SAFE")
+        self.assertEqual(result["dependencyAudit"]["summary"]["queried"], 1)
+        self.assertEqual(result["dependencyAudit"]["dependencies"][0]["name"], "react")
+        json.dumps(result)
+        osv_query.assert_called_once()
+
+    def test_missing_npm_package_error_explains_published_package_requirement(self):
+        with patch(
+            "helper.scanner._fetch_json",
+            side_effect=ScanError("Remote metadata request failed with HTTP 404.", status_code=404),
+        ):
+            with self.assertRaises(ScanError) as raised:
+                _registry_metadata("portfolio-new")
+
+        self.assertEqual(raised.exception.status_code, 404)
+        self.assertIn("portfolio-new", str(raised.exception))
+        self.assertIn("published npm version", str(raised.exception))
+
     def test_github_api_omits_authorization_header_without_token(self):
         response = requests.Response()
         response.status_code = 200
@@ -264,6 +440,7 @@ class RepositoryTests(unittest.TestCase):
                     "tree": [
                         {"path": "package.json", "type": "blob"},
                         {"path": "packages/one/package.json", "type": "blob"},
+                        {"path": "package-lock.json", "type": "blob"},
                         {"path": "README.md", "type": "blob"},
                     ],
                 }
@@ -281,7 +458,9 @@ class RepositoryTests(unittest.TestCase):
                     }
                 )
             if url.endswith("/package.json"):
-                return json.dumps({"name": "root-package", "version": "1.0.0"})
+                return json.dumps(
+                    {"name": "root-package", "version": "1.0.0", "private": True}
+                )
             self.fail(f"Unexpected raw GitHub URL: {url}")
 
         with (
@@ -291,6 +470,8 @@ class RepositoryTests(unittest.TestCase):
             result = inspect_public_repository("https://github.com/owner/repo/")
 
         self.assertEqual(result["repository"]["defaultBranchCommit"], commit)
+        self.assertTrue(result["manifests"][0]["private"])
+        self.assertEqual(result["lockfiles"], ["package-lock.json"])
         self.assertEqual([item["path"] for item in result["manifests"]], [
             "package.json",
             "packages/one/package.json",

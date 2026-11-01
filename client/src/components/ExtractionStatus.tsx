@@ -1,10 +1,10 @@
 import { Lock } from 'lucide-react';
-import type { ScanResult } from '../types';
+import type { PackageScanResult } from '../types';
 import { Card } from './ui/Card';
 import { DataRow } from './ui/DataRow';
 import { Badge } from './ui/Badge';
 
-export function ExtractionStatus({ data }: { data: ScanResult['extraction'] }) {
+export function ExtractionStatus({ data }: { data: PackageScanResult['extraction'] }) {
   return (
     <Card
       step="02"

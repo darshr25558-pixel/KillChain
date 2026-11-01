@@ -1,9 +1,9 @@
 import { Activity, AlertCircle } from 'lucide-react';
-import type { ScanResult } from '../types';
+import type { RiskAssessment } from '../types';
 import { Badge, type BadgeVariant } from './ui/Badge';
 
-export function RiskScore({ data }: { data: ScanResult['risk'] }) {
-  function getLevelVariant(level: ScanResult['risk']['level']): BadgeVariant {
+export function RiskScore({ data }: { data: RiskAssessment }) {
+  function getLevelVariant(level: RiskAssessment['level']): BadgeVariant {
     if (level === 'CRITICAL') return 'crit';
     if (level === 'WARN') return 'warn';
     return 'safe';

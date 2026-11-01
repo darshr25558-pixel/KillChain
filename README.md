@@ -30,6 +30,8 @@ Choose **GitHub repository** in the scanner and provide a public URL such as `ht
 
 The default-branch commit is displayed as repository context only and is never silently treated as the release source. Leave the source revision blank to resolve npm `gitHead` or a matching version tag, or enter a specific commit, tag, or branch (suggestions include the first 100 discovered branches and tags). Manually selected revisions are labeled unverified unless npm metadata confirms the commit and repository. Repository content and package scripts are never executed. Very large GitHub trees and repositories with more than 100 package manifests are rejected rather than partially or arbitrarily inspected.
 
+Choose **Dependency audit** to assess dependencies declared across repository `package.json` files without requiring the repository itself to be published on npm. npm `package-lock.json` and `npm-shrinkwrap.json` files provide exact direct and transitive versions; when no supported lockfile is present, only exact direct dependency versions can be checked and ranges are marked unresolved. Exact versions are checked against OSV advisories. The report includes the repository commit, dependency paths, advisory evidence, and an uncertainty-aware deterministic risk score. Packages and scripts are never installed or executed.
+
 GitHub API requests are unauthenticated by default and may be rate-limited. To raise the limit for a deployed backend, add a read-only GitHub token as the `GITHUB_TOKEN` environment variable in Render's backend service settings. Keep it server-side; never add it to the frontend or commit it to the repository. Deploy the backend after setting the variable. If the quota is exhausted without a token, the API reports a rate-limit error and can be retried after GitHub resets the quota.
 
 ## Tech Stack
@@ -107,6 +109,7 @@ Press `Ctrl+C` to stop both processes cleanly.
 | POST   | `/api/packages/fetch` | Fetch package metadata from npm      |
 | POST   | `/api/repositories/inspect` | Inspect a public GitHub repository and discover package manifests |
 | POST   | `/api/repositories/scan` | Scan a selected repository package against its exact npm version |
+| POST   | `/api/repositories/dependencies/scan` | Audit exact repository dependency versions against OSV advisories |
 
 ## CI/CD
 

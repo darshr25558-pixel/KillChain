@@ -1,9 +1,9 @@
 import { Sparkles, CheckCircle2 } from 'lucide-react';
-import type { ScanResult } from '../types';
+import type { ScanExplanation } from '../types';
 import { Card } from './ui/Card';
 import { DataRow } from './ui/DataRow';
 
-export function AIExplanation({ data }: { data: ScanResult['aiExplanation'] }) {
+export function AIExplanation({ data }: { data: ScanExplanation }) {
   return (
     <Card
       step="10"

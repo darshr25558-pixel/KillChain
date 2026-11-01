@@ -10,6 +10,7 @@ export interface RepositoryManifest {
   error?: string | null;
   name?: string | null;
   version?: string | null;
+  private?: boolean;
   repository?: unknown;
   main?: unknown;
   module?: unknown;
@@ -19,6 +20,8 @@ export interface RepositoryManifest {
   scripts?: Record<string, string>;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
+  optionalDependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
   workspaces?: unknown;
   content: string;
 }
@@ -41,6 +44,7 @@ export interface RepositoryInspection {
   tagsComplete: boolean;
   releasesComplete: boolean;
   manifests: RepositoryManifest[];
+  lockfiles?: string[];
   listingComplete: boolean;
 }
 
@@ -96,6 +100,15 @@ export async function startRepositoryScan(input: {
       version: input.version,
       revision: input.revision || null,
     }),
+  });
+  return parseJsonResponse<{ id: string }>(res);
+}
+
+export async function startRepositoryDependencyScan(repositoryUrl: string): Promise<{ id: string }> {
+  const res = await fetch(`${API_BASE}/repositories/dependencies/scan`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ repository_url: repositoryUrl }),
   });
   return parseJsonResponse<{ id: string }>(res);
 }

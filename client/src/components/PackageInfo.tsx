@@ -1,11 +1,11 @@
 import { Package } from 'lucide-react';
-import type { ScanResult } from '../types';
+import type { PackageScanResult } from '../types';
 import { Card } from './ui/Card';
 import { DataRow } from './ui/DataRow';
 import { CodeBlock } from './ui/CodeBlock';
 import { Badge } from './ui/Badge';
 
-export function PackageInfo({ data }: { data: ScanResult['pkg'] }) {
+export function PackageInfo({ data }: { data: PackageScanResult['pkg'] }) {
   return (
     <Card
       step="01"

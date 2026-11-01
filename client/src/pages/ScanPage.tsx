@@ -12,13 +12,14 @@ import {
 } from 'lucide-react';
 import {
   inspectRepository,
+  startRepositoryDependencyScan,
   startRepositoryScan,
   startScan,
   type RepositoryInspection,
   type RepositoryManifest,
 } from '../api';
 
-type ScanMode = 'package' | 'repository';
+type ScanMode = 'package' | 'repository' | 'dependencies';
 
 export function ScanPage({ onScanComplete }: { onScanComplete: (id: string) => void }) {
   const [mode, setMode] = useState<ScanMode>('package');
@@ -35,6 +36,15 @@ export function ScanPage({ onScanComplete }: { onScanComplete: (id: string) => v
   const selectedManifest = inspection?.manifests.find(
     (manifest) => manifest.path === selectedManifestPath,
   );
+  const declaredDependencyCount = inspection?.manifests.reduce(
+    (total, manifest) =>
+      total
+      + Object.keys(manifest.dependencies ?? {}).length
+      + Object.keys(manifest.devDependencies ?? {}).length
+      + Object.keys(manifest.optionalDependencies ?? {}).length
+      + Object.keys(manifest.peerDependencies ?? {}).length,
+    0,
+  ) ?? 0;
   const samplePackages = ['lodash', 'express', 'chalk', 'event-stream'];
 
   async function handlePackageSubmit(event: FormEvent) {
@@ -95,6 +105,21 @@ export function ScanPage({ onScanComplete }: { onScanComplete: (id: string) => v
     }
   }
 
+  async function handleRepositoryDependencyScan(event: FormEvent) {
+    event.preventDefault();
+    if (!inspection) return;
+    setLoading(true);
+    setError('');
+    try {
+      const result = await startRepositoryDependencyScan(inspection.repository.url);
+      onScanComplete(result.id);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Dependency audit failed');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   function selectManifest(manifest: RepositoryManifest) {
     setSelectedManifestPath(manifest.path);
     setName(manifest.name ?? '');
@@ -113,7 +138,11 @@ export function ScanPage({ onScanComplete }: { onScanComplete: (id: string) => v
           <span className="card-step-badge">SCANNER</span>
           <div className="ui-card-title-group">
             <h2 className="card-title">
-              {mode === 'package' ? 'Analyze Published Package' : 'Analyze Public Repository'}
+              {mode === 'package'
+                ? 'Analyze Published Package'
+                : mode === 'repository'
+                  ? 'Compare Repository Package'
+                  : 'Audit Repository Dependencies'}
             </h2>
             <span className="ui-card-subtitle">
               Zero code execution — deterministic supply-chain evidence
@@ -144,7 +173,18 @@ export function ScanPage({ onScanComplete }: { onScanComplete: (id: string) => v
               setError('');
             }}
           >
-            <GitBranch size={14} /> GitHub repository
+            <GitBranch size={14} /> package comparison
+          </button>
+          <button
+            type="button"
+            className="preset-chip"
+            aria-pressed={mode === 'dependencies'}
+            onClick={() => {
+              setMode('dependencies');
+              setError('');
+            }}
+          >
+            <Shield size={14} /> dependency audit
           </button>
         </div>
       </div>
@@ -183,7 +223,7 @@ export function ScanPage({ onScanComplete }: { onScanComplete: (id: string) => v
           </div>
 
           <div className="form-group" style={{ marginTop: 24, marginBottom: 8 }}>
-            <button type="submit" className="btn-primary"             disabled={loading || !name.trim()}>
+            <button type="submit" className="btn-primary" disabled={loading || !name.trim()}>
               {loading ? (
                 <>
                   <Loader2 size={16} className="badge-icon" style={{ animation: 'spin 1s linear infinite' }} />
@@ -200,7 +240,15 @@ export function ScanPage({ onScanComplete }: { onScanComplete: (id: string) => v
           </div>
         </form>
       ) : (
-        <form onSubmit={inspection ? handleRepositoryScan : handleInspectRepository}>
+        <form
+          onSubmit={
+            inspection
+              ? mode === 'dependencies'
+                ? handleRepositoryDependencyScan
+                : handleRepositoryScan
+              : handleInspectRepository
+          }
+        >
           <div className="form-group">
             <label className="form-label" htmlFor="repository-url">Public GitHub Repository URL</label>
             <div className="form-input-wrapper">
@@ -231,12 +279,51 @@ export function ScanPage({ onScanComplete }: { onScanComplete: (id: string) => v
                 ) : (
                   <>
                     <Search size={16} />
-                    <span>Find npm Packages</span>
+                    <span>{mode === 'dependencies' ? 'Inspect Repository' : 'Find npm Packages'}</span>
                     <ArrowRight size={15} />
                   </>
                 )}
               </button>
             </div>
+          ) : mode === 'dependencies' ? (
+            <>
+              <div className="form-group">
+                <div className="form-label">Repository</div>
+                <div>{inspection.repository.canonicalUrl}</div>
+                <div className="ui-card-subtitle">
+                  Audit snapshot: {inspection.repository.defaultBranch} at{' '}
+                  <code>{inspection.repository.defaultBranchCommit.slice(0, 12)}</code>
+                </div>
+              </div>
+              <div className="form-group">
+                <div className="form-label">Dependency inventory</div>
+                <div className="ui-card-subtitle">
+                  Found {declaredDependencyCount} declared dependency entries across{' '}
+                  {inspection.manifests.length} package manifest(s) and{' '}
+                  {inspection.lockfiles?.length ?? 0} npm lockfile(s).
+                </div>
+                <div className="ui-card-subtitle">
+                  Lockfiles resolve transitive dependencies to exact versions. Without a supported lockfile,
+                  only exact versions declared directly can be checked; ranges remain explicitly unresolved.
+                </div>
+              </div>
+              <div className="form-group" style={{ marginTop: 24, marginBottom: 8 }}>
+                <button type="submit" className="btn-primary" disabled={loading}>
+                  {loading ? (
+                    <>
+                      <Loader2 size={16} className="badge-icon" style={{ animation: 'spin 1s linear infinite' }} />
+                      <span>Auditing Repository Dependencies...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Shield size={16} />
+                      <span>Audit Dependencies with OSV</span>
+                      <ArrowRight size={15} />
+                    </>
+                  )}
+                </button>
+              </div>
+            </>
           ) : (
             <>
               <div className="form-group">
@@ -281,6 +368,7 @@ export function ScanPage({ onScanComplete }: { onScanComplete: (id: string) => v
                       <option key={manifest.path} value={manifest.path} disabled={!manifest.valid}>
                         {manifest.path}
                         {manifest.name ? ` — ${manifest.name}` : ''}
+                        {manifest.private ? ' (private)' : ''}
                         {!manifest.valid ? ' (invalid package manifest)' : ''}
                       </option>
                     ))}
@@ -290,6 +378,13 @@ export function ScanPage({ onScanComplete }: { onScanComplete: (id: string) => v
 
               {selectedManifest && (
                 <>
+                  {selectedManifest.private && (
+                    <div className="error-banner">
+                      This manifest is marked private, so npm will not publish it. You can still compare an
+                      earlier published version by entering its exact version; otherwise select a public npm
+                      package manifest.
+                    </div>
+                  )}
                   <div className="form-group">
                     <label className="form-label" htmlFor="repository-package-name">npm package</label>
                     <input

@@ -7,6 +7,7 @@ from helper.scanner import (
     get_scan,
     inspect_public_repository,
     list_scans,
+    run_repository_dependency_scan,
     run_scan,
     save_scan,
 )
@@ -34,6 +35,16 @@ def create_repository_scan(req: RepositoryScan):
             manifest_path=req.manifest_path,
             source_revision=req.revision,
         )
+        save_scan(result)
+    except ScanError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return {"id": result["id"]}
+
+
+@Fetch_router.post("/repositories/dependencies/scan", status_code=201)
+def create_repository_dependency_scan(req: RepositoryInspect):
+    try:
+        result = run_repository_dependency_scan(req.repository_url)
         save_scan(result)
     except ScanError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc

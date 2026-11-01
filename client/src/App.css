@@ -933,6 +933,59 @@ table.data-table td strong {
   flex-shrink: 0;
 }
 
+.dependency-audit-card {
+  margin-bottom: 20px;
+}
+
+.dependency-audit-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+  gap: 12px;
+  margin: 18px 0;
+}
+
+.dependency-audit-summary > div {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 14px;
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+}
+
+.dependency-audit-summary strong {
+  color: var(--text-primary);
+  font-size: 19px;
+}
+
+.dependency-audit-summary span {
+  grid-column: 2;
+  font-size: 12px;
+}
+
+.dependency-audit-advisory {
+  min-width: 220px;
+  padding: 8px 0;
+}
+
+.dependency-audit-advisory + .dependency-audit-advisory {
+  border-top: 1px solid var(--border-hairline);
+}
+
+.dependency-audit-advisory > span {
+  margin-left: 8px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.dependency-audit-advisory > div,
+.dependency-audit-advisory > small {
+  display: block;
+  margin-top: 4px;
+}
+
 /* ==================== AI EXPLANATION CARD ==================== */
 
 .ai-recommendation-box {

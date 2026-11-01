@@ -1,5 +1,5 @@
 import { BadgeCheck, ExternalLink } from 'lucide-react';
-import type { ScanResult } from '../types';
+import type { PackageScanResult } from '../types';
 import { Card } from './ui/Card';
 import { DataRow } from './ui/DataRow';
 import { Badge } from './ui/Badge';
@@ -10,7 +10,7 @@ function claimBadge(value: boolean | null | undefined) {
   return <Badge variant="info">NOT VERIFIED</Badge>;
 }
 
-export function ProvenanceCheck({ data }: { data: ScanResult['provenance'] }) {
+export function ProvenanceCheck({ data }: { data: PackageScanResult['provenance'] }) {
   const invalid = data.status === 'invalid' || data.status === 'verified-claims-mismatch';
   const statusLabels: Record<string, string> = {
     invalid: 'INVALID ATTESTATION',
